@@ -1240,5 +1240,59 @@
     "en": "{0} layers",
     "zh-TW": "{0} 層",
     "ja": "{0} レイヤー"
+  },
+  "Xaml.FileInTheDrawingOptional": {
+    "zh-CN": "绘图区内嵌文件（可选）",
+    "en": "File stored in the drawing (optional)",
+    "zh-TW": "繪圖區內嵌檔案（選用）",
+    "ja": "絵柄領域に埋め込むファイル（任意）"
+  },
+  "Xaml.CheckCapacity": {
+    "zh-CN": "检查容量",
+    "en": "Check capacity",
+    "zh-TW": "檢查容量",
+    "ja": "容量を確認"
+  },
+  "Xaml.Remove": {
+    "zh-CN": "移除",
+    "en": "Remove",
+    "zh-TW": "移除",
+    "ja": "解除"
+  },
+  "Xaml.StoresTheFileInsideTheDrawingItselfThePicture": {
+    "zh-CN": "把文件写进绘图区本身：画面保持不变，仅用亮暗字节的排列携带数据。可存放的大小取决于图片，中间调越多越大，纯黑或纯白的部分存不了数据。请先检查容量。",
+    "en": "Stores the file inside the drawing itself. The picture stays the same; only the order of light and dark bytes carries data. How much fits depends on the image: more midtones hold more, flat black or white holds nothing. Check the capacity first.",
+    "zh-TW": "把檔案寫進繪圖區本身：畫面保持不變，僅用亮暗位元組的排列攜帶資料。可存放的大小取決於圖片，中間調越多越大，純黑或純白的部分存不了資料。請先檢查容量。",
+    "ja": "ファイルを絵柄領域そのものに書き込みます。絵柄は変わらず、明暗バイトの並び順だけでデータを運びます。入る量は画像次第で、中間調が多いほど大きく、真っ黒や真っ白の部分には入りません。先に容量を確認してください。"
+  },
+  "Xaml.ExtractAnEmbeddedFile": {
+    "zh-CN": "取出内嵌文件",
+    "en": "Extract an embedded file",
+    "zh-TW": "取出內嵌檔案",
+    "ja": "埋め込みファイルを取り出す"
+  },
+  "Xaml.RecoversAFileStoredInsideTheDrawingFromAGenerated": {
+    "zh-CN": "从生成的 ISO，或从盘片读出的镜像中，取出写入绘图区的文件。不需要原图。从盘片读出时需要从 LBA 0 开始的完整 2048 字节/扇区镜像。",
+    "en": "Recovers a file stored inside the drawing from a generated ISO or an image read from the disc. The source picture is not needed. An image read from a disc must start at LBA 0 and use 2048-byte sectors.",
+    "zh-TW": "從產生的 ISO，或從光碟讀出的映像中，取出寫入繪圖區的檔案。不需要原圖。從光碟讀出時需要從 LBA 0 開始的完整 2048 位元組/磁區映像。",
+    "ja": "生成した ISO、またはディスクから読み出したイメージから、絵柄領域に書き込んだファイルを取り出します。元の画像は不要です。ディスクから読み出す場合は、LBA 0 から始まる 2048 バイト/セクターのイメージが必要です。"
+  },
+  "Xaml.IsoOrDiscImage": {
+    "zh-CN": "ISO 或盘片镜像",
+    "en": "ISO or disc image",
+    "zh-TW": "ISO 或光碟映像",
+    "ja": "ISO またはディスクイメージ"
+  },
+  "Xaml.SaveTheRecoveredFileAs": {
+    "zh-CN": "取出后保存为",
+    "en": "Save the recovered file as",
+    "zh-TW": "取出後儲存為",
+    "ja": "取り出したファイルの保存先"
+  },
+  "Xaml.ExtractFile": {
+    "zh-CN": "取出文件",
+    "en": "Extract file",
+    "zh-TW": "取出檔案",
+    "ja": "ファイルを取り出す"
   }
 }

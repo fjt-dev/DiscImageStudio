@@ -67,6 +67,10 @@ public partial class DesignViewModel : ObservableObject
 
     public RelayCommand BrowseDataCommand => _shell.Export.BrowseDataCommand;
 
+    /// <summary>The export workspace owns the file stored in the drawing (browse, capacity
+    /// check and its result); the disc-files card on this page edits the same state.</summary>
+    public ExportViewModel Export => _shell.Export;
+
     public ObservableCollection<DesignLayerViewModel> Layers { get; } = [];
 
     [ObservableProperty]

@@ -7,8 +7,10 @@ using DiscImageStudio.Burning;
 using DiscImageStudio.Cd;
 using DiscImageStudio.Core;
 using DiscImageStudio.Core.Calibration;
+using DiscImageStudio.Core.Carrier;
 using DiscImageStudio.Dvd;
 using DiscImageStudio.Services;
+using DvdImageSolver.Solver;
 
 namespace DiscImageStudio.ViewModels;
 
@@ -523,18 +525,54 @@ public partial class BurnViewModel : ObservableObject
                                 ? "DISC_IMAGE"
                                 : _state.DvdVolumeLabel.Trim(),
                             filesAtOuterRing: _state.DvdFilesAtOuterRing);
+
+                    // A file stored inside the drawing must fit before anything is written: a
+                    // written disc cannot be completed afterwards. This measures the drawing
+                    // exactly (it can take a few minutes on a full disc) and stops here, with the
+                    // disc untouched, when the file is too large.
+                    string? embedFile = _state.HasDvdEmbedFile ? _state.DvdEmbedFilePath.Trim() : null;
+                    long embedBytes = 0;
+                    if (embedFile is not null)
+                    {
+                        try
+                        {
+                            await _shell.Export.EnsureEmbedFitsAsync(compositePath, options, hybridPlan);
+                            embedBytes = new FileInfo(embedFile).Length;
+                        }
+                        catch (Exception exception)
+                        {
+                            BurnStatusText = L.T("内嵌文件放不下或无法检查，未开始刻录。");
+                            _shell.ShowValidationError(exception);
+                            return;
+                        }
+                    }
+
                     request = new OpticalBurnRequest(
                         device.Id,
                         OpticalBurnMediaKind.DvdData,
                         options.ContentLength,
                         (output, cancellationToken) =>
                         {
+                            DvdStreamingOptions run = options;
+                            using CarrierPayload? payload = embedFile is null ? null : CarrierPayload.FromFile(embedFile);
+                            DvdBitCarrierEmbedder? embedder = null;
+                            if (payload is not null)
+                            {
+                                if (payload.DataLength != embedBytes)
+                                {
+                                    throw new InvalidOperationException(L.T("内嵌文件在容量检查之后发生了变化，已中止。"));
+                                }
+
+                                embedder = new DvdBitCarrierEmbedder(payload);
+                                run = options with { PayloadProcessor = embedder };
+                            }
+
                             if (hybridPlan is null)
                             {
                                 DvdStreamingGenerator.Generate(
                                     compositePath,
                                     output,
-                                    options,
+                                    run,
                                     cancellationToken: cancellationToken);
                             }
                             else
@@ -542,9 +580,14 @@ public partial class BurnViewModel : ObservableObject
                                 DvdStreamingGenerator.GenerateHybrid(
                                     compositePath,
                                     output,
-                                    options,
+                                    run,
                                     hybridPlan,
                                     cancellationToken: cancellationToken);
+                            }
+
+                            if (embedder is { Stats.Complete: false })
+                            {
+                                throw new InvalidOperationException(L.T("内嵌文件没有完整写入绘图区。"));
                             }
                         },
                         selectedWriteSpeed.Speed);
@@ -553,6 +596,10 @@ public partial class BurnViewModel : ObservableObject
                         : L.F($"DVD 混合盘 · {hybridPlan.FileCount} 个文件（{(_state.DvdFilesAtOuterRing ? L.T("外圈") : L.T("内圈"))}）")
                             + L.F($" · 绘图 LBA {hybridPlan.DrawingStartLba}–{hybridPlan.DrawingEndLbaExclusive - 1}")
                             + $" · {options.ContentLength / (1024.0 * 1024.0):F1} MiB";
+                    if (embedFile is not null)
+                    {
+                        contentDescription += L.F($" · 内嵌文件 {Path.GetFileName(embedFile)} · {embedBytes / (1024.0 * 1024.0):F2} MiB");
+                    }
                 }
                 else
                 {
@@ -767,20 +814,7 @@ public partial class BurnViewModel : ObservableObject
         return disc;
     }
 
-    private DvdStreamingOptions ReadDvdStreamingOptions()
-    {
-        int totalSectors = ParameterParser.ParsePositiveInt(_state.DvdTotalSectors, L.T("DVD 总扇区数"));
-        DvdStreamingOptions options = new(
-            checked((uint)totalSectors),
-            ParameterParser.ParsePositiveDouble(_state.DvdInnerRadius, L.T("DVD 内半径")),
-            ParameterParser.ParsePositiveDouble(_state.DvdOuterRadius, L.T("DVD 外半径")),
-            PitchLinear: ParameterParser.ParseDouble(_state.DvdPitchLinear, L.T("DVD 轨距一次项")),
-            PitchQuadratic: ParameterParser.ParseDouble(_state.DvdPitchQuadratic, L.T("DVD 轨距二次项")),
-            PitchCubic: ParameterParser.ParseDouble(_state.DvdPitchCubic, L.T("DVD 轨距三次项")),
-            Tone: _state.DvdTone);
-        options.Validate();
-        return options;
-    }
+    private DvdStreamingOptions ReadDvdStreamingOptions() => _state.ReadDvdStreamingOptions();
 
     public sealed record BurnWriteSpeedOption(
         OpticalWriteSpeed? Speed,

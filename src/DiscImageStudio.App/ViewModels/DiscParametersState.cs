@@ -94,6 +94,9 @@ public partial class DiscParametersState : ObservableObject
     [ObservableProperty] private string _dvdOutputPath = string.Empty;
     [ObservableProperty, NotifyPropertyChangedFor(nameof(HasDvdFiles))] private string _dvdDataDirectory = string.Empty;
     [ObservableProperty] private bool _dvdFilesAtOuterRing;
+    // A file stored inside the drawing itself (the one-bit-per-byte channel), not as a
+    // filesystem entry. Independent of the on-disc folder above.
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(HasDvdEmbedFile))] private string _dvdEmbedFilePath = string.Empty;
     [ObservableProperty, NotifyPropertyChangedFor(nameof(DvdPitchSummary), nameof(DvdActualPitchSummary))] private string _dvdTotalSectors = "2295104";
     [ObservableProperty, NotifyPropertyChangedFor(nameof(DvdPitchSummary))] private string _dvdInnerRadius = "24.0";
     [ObservableProperty, NotifyPropertyChangedFor(nameof(DvdPitchSummary))] private string _dvdOuterRadius = "58.0";
@@ -226,6 +229,25 @@ public partial class DiscParametersState : ObservableObject
     }
 
     public bool HasDvdFiles => !string.IsNullOrWhiteSpace(DvdDataDirectory);
+
+    public bool HasDvdEmbedFile => !string.IsNullOrWhiteSpace(DvdEmbedFilePath);
+
+    /// <summary>The DVD generation geometry and tone as the streaming engine takes them; the
+    /// burn page, the capacity check and the export capacity guard all read it from here.</summary>
+    internal DvdStreamingOptions ReadDvdStreamingOptions()
+    {
+        int totalSectors = ParameterParser.ParsePositiveInt(DvdTotalSectors, L.T("DVD 总扇区数"));
+        DvdStreamingOptions options = new(
+            checked((uint)totalSectors),
+            ParameterParser.ParsePositiveDouble(DvdInnerRadius, L.T("DVD 内半径")),
+            ParameterParser.ParsePositiveDouble(DvdOuterRadius, L.T("DVD 外半径")),
+            PitchLinear: ParameterParser.ParseDouble(DvdPitchLinear, L.T("DVD 轨距一次项")),
+            PitchQuadratic: ParameterParser.ParseDouble(DvdPitchQuadratic, L.T("DVD 轨距二次项")),
+            PitchCubic: ParameterParser.ParseDouble(DvdPitchCubic, L.T("DVD 轨距三次项")),
+            Tone: DvdTone);
+        options.Validate();
+        return options;
+    }
 
     public bool HasBluRayFiles => !string.IsNullOrWhiteSpace(BdDataDirectory);
 

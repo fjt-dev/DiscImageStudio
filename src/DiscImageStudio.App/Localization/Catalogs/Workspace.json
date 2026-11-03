@@ -820,5 +820,113 @@
     "en": "Generation parameters have been adjusted manually. Save them as a user preset to keep them.",
     "zh-TW": "產生參數已在介面中手動調整；如需長期儲存，請寫入使用者預設 JSON。",
     "ja": "生成パラメーターは画面上で手動調整されています。保持するには、ユーザー プリセット JSON に保存してください。"
+  },
+  "选择要写入绘图区的文件": {
+    "zh-CN": "选择要写入绘图区的文件",
+    "en": "Choose a file to store in the drawing",
+    "zh-TW": "選擇要寫入繪圖區的檔案",
+    "ja": "絵柄領域に書き込むファイルを選択"
+  },
+  "所有文件|*.*": {
+    "zh-CN": "所有文件|*.*",
+    "en": "All files|*.*",
+    "zh-TW": "所有檔案|*.*",
+    "ja": "すべてのファイル|*.*"
+  },
+  "选择 ISO 或从盘片读出的镜像": {
+    "zh-CN": "选择 ISO 或从盘片读出的镜像",
+    "en": "Choose an ISO or an image read from a disc",
+    "zh-TW": "選擇 ISO 或從光碟讀出的映像",
+    "ja": "ISO またはディスクから読み出したイメージを選択"
+  },
+  "请选择要读取的 ISO 或盘片镜像。": {
+    "zh-CN": "请选择要读取的 ISO 或盘片镜像。",
+    "en": "Choose the ISO or disc image to read.",
+    "zh-TW": "請選擇要讀取的 ISO 或光碟映像。",
+    "ja": "読み取る ISO またはディスクイメージを選択してください。"
+  },
+  "请选择取出文件的保存位置。": {
+    "zh-CN": "请选择取出文件的保存位置。",
+    "en": "Choose where to save the recovered file.",
+    "zh-TW": "請選擇取出檔案的儲存位置。",
+    "ja": "取り出したファイルの保存先を選択してください。"
+  },
+  "正在取出内嵌文件…": {
+    "zh-CN": "正在取出内嵌文件…",
+    "en": "Extracting the embedded file…",
+    "zh-TW": "正在取出內嵌檔案…",
+    "ja": "埋め込みファイルを取り出しています…"
+  },
+  "内嵌文件不存在：{0}": {
+    "zh-CN": "内嵌文件不存在：{0}",
+    "en": "The embedded file does not exist: {0}",
+    "zh-TW": "內嵌檔案不存在：{0}",
+    "ja": "埋め込むファイルが存在しません：{0}"
+  },
+  "检查内嵌容量": {
+    "zh-CN": "检查内嵌容量",
+    "en": "Checking embed capacity",
+    "zh-TW": "檢查內嵌容量",
+    "ja": "埋め込み容量の確認"
+  },
+  "正在测量绘图区容量… {0:P0}": {
+    "zh-CN": "正在测量绘图区容量… {0:P0}",
+    "en": "Measuring the drawing's capacity… {0:P0}",
+    "zh-TW": "正在測量繪圖區容量… {0:P0}",
+    "ja": "絵柄領域の容量を測定しています… {0:P0}"
+  },
+  "容量测量完成": {
+    "zh-CN": "容量测量完成",
+    "en": "Capacity measured",
+    "zh-TW": "容量測量完成",
+    "ja": "容量の測定が完了しました"
+  },
+  "容量测量失败": {
+    "zh-CN": "容量测量失败",
+    "en": "Capacity measurement failed",
+    "zh-TW": "容量測量失敗",
+    "ja": "容量の測定に失敗しました"
+  },
+  "可以放入：绘图区最多可存 {0:F2} MiB，当前文件 {1:F2} MiB（占 {2:F1}%）。": {
+    "zh-CN": "可以放入：绘图区最多可存 {0:F2} MiB，当前文件 {1:F2} MiB（占 {2:F1}%）。",
+    "en": "It fits: the drawing holds up to {0:F2} MiB and this file is {1:F2} MiB ({2:F1}% of the capacity).",
+    "zh-TW": "可以放入：繪圖區最多可存 {0:F2} MiB，目前檔案 {1:F2} MiB（佔 {2:F1}%）。",
+    "ja": "入ります：絵柄領域には最大 {0:F2} MiB 入り、このファイルは {1:F2} MiB です（容量の {2:F1}%）。"
+  },
+  "放不下：绘图区最多可存 {0:F2} MiB，当前文件 {1:F2} MiB，超出 {2} 字节。": {
+    "zh-CN": "放不下：绘图区最多可存 {0:F2} MiB，当前文件 {1:F2} MiB，超出 {2} 字节。",
+    "en": "It does not fit: the drawing holds up to {0:F2} MiB, this file is {1:F2} MiB, {2} bytes too large.",
+    "zh-TW": "放不下：繪圖區最多可存 {0:F2} MiB，目前檔案 {1:F2} MiB，超出 {2} 位元組。",
+    "ja": "入りません：絵柄領域には最大 {0:F2} MiB まで、このファイルは {1:F2} MiB で、{2} バイト超過しています。"
+  },
+  "请换更小的文件，或使用中间调更多的图片。": {
+    "zh-CN": "请换更小的文件，或使用中间调更多的图片。",
+    "en": "Use a smaller file, or an image with more midtones.",
+    "zh-TW": "請換更小的檔案，或使用中間調更多的圖片。",
+    "ja": "より小さいファイルにするか、中間調の多い画像を使ってください。"
+  },
+  "内嵌文件放不下或无法检查，未开始刻录。": {
+    "zh-CN": "内嵌文件放不下或无法检查，未开始刻录。",
+    "en": "The embedded file does not fit or could not be checked. Nothing was written.",
+    "zh-TW": "內嵌檔案放不下或無法檢查，未開始燒錄。",
+    "ja": "埋め込みファイルが入らないか確認できませんでした。書き込みは開始していません。"
+  },
+  "内嵌文件在容量检查之后发生了变化，已中止。": {
+    "zh-CN": "内嵌文件在容量检查之后发生了变化，已中止。",
+    "en": "The embedded file changed after the capacity check. Aborted.",
+    "zh-TW": "內嵌檔案在容量檢查之後發生了變化，已中止。",
+    "ja": "容量確認のあとに埋め込みファイルが変更されたため、中止しました。"
+  },
+  "内嵌文件没有完整写入绘图区。": {
+    "zh-CN": "内嵌文件没有完整写入绘图区。",
+    "en": "The embedded file was not written completely.",
+    "zh-TW": "內嵌檔案沒有完整寫入繪圖區。",
+    "ja": "埋め込みファイルが完全には書き込まれませんでした。"
+  },
+  " · 内嵌文件 {0} · {1:F2} MiB": {
+    "zh-CN": " · 内嵌文件 {0} · {1:F2} MiB",
+    "en": " · embedded file {0} · {1:F2} MiB",
+    "zh-TW": " · 內嵌檔案 {0} · {1:F2} MiB",
+    "ja": " · 埋め込みファイル {0} · {1:F2} MiB"
   }
 }
