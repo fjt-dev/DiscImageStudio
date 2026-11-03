@@ -33,6 +33,17 @@ public static class CombinadicGroup
         return CapacityByOnes[ones];
     }
 
+    /// <summary>
+    /// Same for a group of <paramref name="size"/> symbols (0..16). Media whose symbols that
+    /// sit close together on the disc do not come in tidy runs of 16 use smaller groups.
+    /// </summary>
+    public static int CapacityBits(int size, int ones)
+    {
+        if ((uint)size > Size || (uint)ones > size)
+            throw new ArgumentOutOfRangeException(nameof(ones));
+        return BitOperations.Log2(Binomial[size, ones]);
+    }
+
     /// <summary>The number of distinct arrangements C(16, ones).</summary>
     public static uint Arrangements(int ones)
     {
@@ -45,15 +56,18 @@ public static class CombinadicGroup
     /// Returns the arrangement bit mask (bit j = symbol j is white) of rank
     /// <paramref name="rank"/> among the patterns with <paramref name="ones"/> white symbols.
     /// </summary>
-    public static ushort Unrank(int ones, uint rank)
+    public static ushort Unrank(int ones, uint rank) => Unrank(Size, ones, rank);
+
+    /// <summary>Unrank within a group of <paramref name="size"/> symbols.</summary>
+    public static ushort Unrank(int size, int ones, uint rank)
     {
-        if ((uint)ones > Size)
+        if ((uint)size > Size || (uint)ones > size)
             throw new ArgumentOutOfRangeException(nameof(ones));
-        if (rank >= Binomial[Size, ones])
+        if (rank >= Binomial[size, ones])
             throw new ArgumentOutOfRangeException(nameof(rank));
         uint mask = 0;
         uint remaining = rank;
-        int position = Size - 1;
+        int position = size - 1;
         for (int index = ones; index >= 1; index--)
         {
             // Largest position p with C(p, index) <= remaining.

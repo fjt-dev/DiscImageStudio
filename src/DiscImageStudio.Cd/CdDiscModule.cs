@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.IO;
 using DiscImageStudio.Core;
+using DiscImageStudio.Core.Carrier;
 
 namespace DiscImageStudio.Cd;
 
@@ -55,10 +56,21 @@ public sealed class CdDiscModule : IOpticalDiscModule
                     new("data-dir", "Files to include; omitted for audio", DiscOptionValueType.InputFolder),
                     new("volume-label", "Data volume label", DiscOptionValueType.String, DefaultValue: "CD_IMAGE"),
                     new("file-position", "File position", DiscOptionValueType.Choice, DefaultValue: "inner", Choices: ["inner", "outer"]),
+                    new("embed-file", "File stored inside the drawing (data image only)", DiscOptionValueType.InputFile),
+                    new("capacity-only", "Only measure how much the drawing can hold (data image only)", DiscOptionValueType.Boolean, DefaultValue: "false"),
                     .. GeometryOptions,
                     new("interleave", "CD-DA delay interleave", DiscOptionValueType.Boolean, DefaultValue: "true"),
                     new("cue", "Write a CUE sheet next to the WAV track", DiscOptionValueType.Boolean, DefaultValue: "true"),
                     .. ToneOptions,
+                ]),
+            new DiscCommandDescriptor(
+                "cd-extract",
+                "Extract file hidden in the drawing",
+                "Recovers a file stored with --embed-file from a generated Mode 1 ISO or a disc image read from LBA 0.",
+                DiscModuleCapabilities.None,
+                [
+                    new("iso", "ISO or disc image", DiscOptionValueType.InputFile, Required: true),
+                    new("output", "Recovered file", DiscOptionValueType.OutputFile, Required: true),
                 ]),
             new DiscCommandDescriptor(
                 "cd-preview-warp",
@@ -105,6 +117,7 @@ public sealed class CdDiscModule : IOpticalDiscModule
         DiscJobResult result = request.Command switch
         {
             "cd-generate" => Generate(request, options, progress, cancellationToken),
+            "cd-extract" => Extract(request, options, progress, cancellationToken),
             "cd-preview-warp" => PreviewWarp(request, options, progress, cancellationToken),
             "cd-preview-track" => PreviewTrack(request, options, progress, cancellationToken),
             _ => throw new ArgumentException(
@@ -120,22 +133,52 @@ public sealed class CdDiscModule : IOpticalDiscModule
         IProgress<DiscJobProgress>? progress,
         CancellationToken cancellationToken)
     {
-        string output = options.Require("output");
+        string embedFile = options.GetString("embed-file", string.Empty).Trim();
+        bool capacityOnly = options.GetBoolean("capacity-only", false);
+        string output = capacityOnly ? options.GetString("output", string.Empty) : options.Require("output");
         string dataDirectory = options.GetString("data-dir", string.Empty).Trim();
         bool outer = ReadFilePosition(options);
+        if ((embedFile.Length > 0 || capacityOnly) && dataDirectory.Length == 0)
+        {
+            throw new ArgumentException(
+                "--embed-file and --capacity-only need a Mode 1 data image: add --data-dir "
+                + "(an empty folder is fine). Audio tracks cannot carry a file.");
+        }
+
         if (dataDirectory.Length > 0)
         {
             CdDiscParameters parameters = ReadParameters(options);
             CdDataLayoutPlan plan = CdDataImageGenerator.PrepareLayout(dataDirectory, parameters,
                 options.GetString("volume-label", "CD_IMAGE"), outer);
+            ToneProfile tone = ReadTone(options);
+            if (capacityOnly)
+                return MeasureCapacity(request, options, parameters, plan, tone, embedFile, progress, cancellationToken);
+            using CarrierPayload? payload = embedFile.Length == 0 ? null : CarrierPayload.FromFile(embedFile);
+            CdBitCarrier? carrier = payload is null ? null : new CdBitCarrier(payload);
             CdGenerationSummary dataSummary = CdDataImageGenerator.Generate(options.Require("input"),
                 output, parameters, plan,
                 value => progress?.Report(new DiscJobProgress(ModuleId, "generate",
                     $"CD data progress {value.Fraction:P1}", value.Fraction, value.CompletedBytes,
-                    value.TotalBytes, value.Elapsed)), cancellationToken, ReadTone(options));
+                    value.TotalBytes, value.Elapsed)), cancellationToken, tone, carrier: carrier);
+            string carried = string.Empty;
+            if (carrier is not null)
+            {
+                CarrierStats stats = carrier.Stats;
+                carried = $", bit carrier: {stats.StoredFileBytes} of {stats.TotalFileBytes} bytes stored in "
+                    + $"{stats.BlocksCarrying} frames (this drawing holds at most {stats.MaxFileBytes} bytes)";
+                if (!stats.Complete)
+                {
+                    return new DiscJobResult(ModuleId, request.Command, 1,
+                        $"error: the drawing holds at most {stats.MaxFileBytes} bytes but {embedFile} is "
+                        + $"{stats.TotalFileBytes} bytes. The ISO was written without the complete file; use a smaller "
+                        + "file, a lighter-toned image or a larger drawing area." + carried, dataSummary.OutputTrack);
+                }
+            }
+
             return new DiscJobResult(ModuleId, request.Command, 0,
                 $"CD data image complete: {plan.FileCount} files, {plan.TotalSectors} sectors, "
-                + $"files={(outer ? "outer" : "inner")}, output={dataSummary.OutputTrack}", dataSummary.OutputTrack);
+                + $"files={(outer ? "outer" : "inner")}, output={dataSummary.OutputTrack}" + carried,
+                dataSummary.OutputTrack);
         }
         CdGenerationSummary summary = CdTrackGenerator.Generate(
             options.Require("input"),
@@ -231,6 +274,71 @@ public sealed class CdDiscModule : IOpticalDiscModule
             0,
             $"CD track preview complete: output={output}",
             output);
+    }
+
+    private static DiscJobResult MeasureCapacity(
+        DiscJobRequest request,
+        CdCommandOptions options,
+        CdDiscParameters parameters,
+        CdDataLayoutPlan plan,
+        ToneProfile tone,
+        string embedFile,
+        IProgress<DiscJobProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        CarrierCapacity capacity = CdDataImageGenerator.MeasureCarrierCapacity(options.Require("input"),
+            parameters, plan, tone,
+            value => progress?.Report(new DiscJobProgress(ModuleId, "measure",
+                $"CD capacity {value.Fraction:P1}", value.Fraction, value.CompletedBytes,
+                value.TotalBytes, value.Elapsed)), cancellationToken);
+        string message = $"capacity: at most {capacity.MaxFileBytes} bytes ({capacity.MaxFileBytes / (1024.0 * 1024):F2} MiB) "
+            + $"in {capacity.BlocksCarrying}/{capacity.Blocks} frames, {capacity.BitsPerByte:F3} bit per drawn byte";
+        if (embedFile.Length == 0)
+            return new DiscJobResult(ModuleId, request.Command, 0, message, null);
+        long size = new FileInfo(embedFile).Length;
+        return capacity.Fits(size)
+            ? new DiscJobResult(ModuleId, request.Command, 0,
+                message + $"; fits: {embedFile} is {size} bytes ({100.0 * size / Math.Max(1, capacity.MaxFileBytes):F1}% of the capacity)", null)
+            : new DiscJobResult(ModuleId, request.Command, 1,
+                message + $"; error: {embedFile} is {size} bytes, too large by {size - capacity.MaxFileBytes} byte(s)", null);
+    }
+
+    private static DiscJobResult Extract(
+        DiscJobRequest request,
+        CdCommandOptions options,
+        IProgress<DiscJobProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        string isoPath = options.Require("iso");
+        string outputPath = options.Require("output");
+        if (string.Equals(Path.GetFullPath(isoPath), Path.GetFullPath(outputPath), StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("--output must differ from --iso.");
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
+        using FileStream iso = new(isoPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 20,
+            FileOptions.SequentialScan);
+        using FileStream output = new(outputPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+        CarrierExtractResult result = CdBitCarrierExtractor.Extract(iso, output,
+            value => progress?.Report(new DiscJobProgress(ModuleId, "extract",
+                $"scanned {value.FramesScanned}/{value.TotalFrames} frames", value.TotalFrames == 0 ? 1 : (double)value.FramesScanned / value.TotalFrames)),
+            cancellationToken);
+        if (!result.HeaderFound)
+        {
+            output.Dispose();
+            File.Delete(outputPath);
+            return new DiscJobResult(ModuleId, request.Command, 1,
+                $"error: no carrier stream found ({result.BlocksAccepted} frames). Check that the image holds the disc from LBA 0.", null);
+        }
+
+        if (!result.Complete)
+        {
+            return new DiscJobResult(ModuleId, request.Command, 1,
+                $"error: stream is incomplete: {result.MissingBits / 8} bytes missing of {result.DataLength}; "
+                + (result.MissingBits == 0 ? "CRC-32 mismatch. " : string.Empty)
+                + $"partial data written to {outputPath}", outputPath);
+        }
+
+        return new DiscJobResult(ModuleId, request.Command, 0,
+            $"extracted {result.DataLength} bytes from {result.BlocksAccepted} frames, CRC-32 verified: {outputPath}", outputPath);
     }
 
     private static CdDiscParameters ReadParameters(CdCommandOptions options, CdDiscParameters? fallback = null)

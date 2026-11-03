@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using DiscImageStudio.Core;
+using DiscImageStudio.Core.Carrier;
 using DiscImageStudio.ImageIO;
 using DiscImageStudio.Iso;
 
@@ -52,9 +53,68 @@ public static class CdDataImageGenerator
         return plan;
     }
 
+    /// <summary>
+    /// Measures how much data the drawing can carry (see <see cref="CdBitCarrier"/>) without
+    /// writing an image. Exact, not an estimate: it builds the drawing's symbols as generation does.
+    /// </summary>
+    public static CarrierCapacity MeasureCarrierCapacity(string imagePath, CdDiscParameters parameters,
+        CdDataLayoutPlan plan, ToneProfile? tone = null, Action<CdProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        Validate(parameters, plan);
+        cancellationToken.ThrowIfCancellationRequested();
+        string source = Path.GetFullPath(imagePath);
+        CdImageSampler sampler = new(RasterImage.Load(source), parameters);
+        ToneProfile effectiveTone = (tone ?? ToneProfile.LegacyBinary).Normalized();
+        long first = CdCarrierGeometry.FirstEligibleFrame(plan.DrawingStartLba);
+        long end = CdCarrierGeometry.EndEligibleFrame(plan.DrawingStartLba, plan.DrawingEndLbaExclusive);
+        long frames = end - first;
+        int parallelism = Math.Max(1, Environment.ProcessorCount);
+        int batch = parallelism * 4;
+        int[] capacities = new int[batch];
+        byte[] groupSizes = CdCarrierGeometry.GroupSizes.ToArray();
+        int[] positions = CdCarrierGeometry.SlotPosition.ToArray();
+        ParallelOptions options = new() { MaxDegreeOfParallelism = parallelism, CancellationToken = cancellationToken };
+        using ThreadLocal<byte[]> buffers = new(() => new byte[CdCarrierGeometry.SlotsPerFrame]);
+        long rawBits = 0, dataBits = 0, carrying = 0;
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        long totalBytes = Math.Max(1, frames * CdCarrierGeometry.SlotsPerFrame);
+        for (long done = 0; done < frames; done += batch)
+        {
+            int count = (int)Math.Min(batch, frames - done);
+            long batchFirst = first + done;
+            Parallel.For(0, count, options, index =>
+            {
+                byte[] symbols = buffers.Value!;
+                long frameBase = (batchFirst + index) * CdCarrierGeometry.FrameSectors * CdCarrierGeometry.RawBytesPerSector;
+                for (int slot = 0; slot < symbols.Length; slot++)
+                {
+                    long physicalByte = frameBase + positions[slot];
+                    symbols[slot] = CdCarrierGeometry.SymbolOf(
+                        CdToneMapping.Map(sampler.Sample(physicalByte), effectiveTone, physicalByte));
+                }
+
+                capacities[index] = CarrierBlockFormat.CountCapacity(symbols, groupSizes);
+            });
+            for (int index = 0; index < count; index++)
+            {
+                int usable = CarrierBlockFormat.UsableDataBits(capacities[index]);
+                rawBits += capacities[index];
+                dataBits += usable;
+                if (usable > 0)
+                    carrying++;
+            }
+
+            progress?.Invoke(new CdProgress((done + count) * CdCarrierGeometry.SlotsPerFrame, totalBytes, stopwatch.Elapsed));
+        }
+
+        return new CarrierCapacity(frames, carrying, rawBits, dataBits, CdCarrierGeometry.SlotsPerFrame);
+    }
+
     public static CdGenerationSummary Generate(string imagePath, string outputPath,
         CdDiscParameters parameters, CdDataLayoutPlan plan, Action<CdProgress>? progress = null,
-        CancellationToken cancellationToken = default, ToneProfile? tone = null, bool useSimdSampling = true)
+        CancellationToken cancellationToken = default, ToneProfile? tone = null, bool useSimdSampling = true,
+        CdBitCarrier? carrier = null)
     {
         Validate(parameters, plan);
         cancellationToken.ThrowIfCancellationRequested();
@@ -74,7 +134,7 @@ public static class CdDataImageGenerator
             1024 * 1024, FileOptions.SequentialScan))
         {
             result = GenerateImageToStream(source, image, output, parameters, plan, progress,
-                cancellationToken, effectiveTone, useSimdSampling) with { OutputTrack = target };
+                cancellationToken, effectiveTone, useSimdSampling, carrier) with { OutputTrack = target };
         }
         CdDataImageMetadata.Save(target, new(parameters, plan.DrawingStartLba,
             plan.DrawingEndLbaExclusive, plan.FilesAtOuterRing, effectiveTone));
@@ -83,25 +143,29 @@ public static class CdDataImageGenerator
 
     public static CdGenerationSummary GenerateToStream(string imagePath, Stream output,
         CdDiscParameters parameters, CdDataLayoutPlan plan, Action<CdProgress>? progress = null,
-        CancellationToken cancellationToken = default, ToneProfile? tone = null, bool useSimdSampling = true)
+        CancellationToken cancellationToken = default, ToneProfile? tone = null, bool useSimdSampling = true,
+        CdBitCarrier? carrier = null)
     {
         Validate(parameters, plan);
         cancellationToken.ThrowIfCancellationRequested();
         string source = Path.GetFullPath(imagePath);
         return GenerateImageToStream(source, RasterImage.Load(source), output, parameters, plan,
-            progress, cancellationToken, (tone ?? ToneProfile.LegacyBinary).Normalized(), useSimdSampling);
+            progress, cancellationToken, (tone ?? ToneProfile.LegacyBinary).Normalized(), useSimdSampling, carrier);
     }
 
     private static CdGenerationSummary GenerateImageToStream(string source, RasterImage image,
         Stream output, CdDiscParameters parameters, CdDataLayoutPlan plan,
-        Action<CdProgress>? progress, CancellationToken cancellationToken, ToneProfile tone, bool useSimdSampling)
+        Action<CdProgress>? progress, CancellationToken cancellationToken, ToneProfile tone, bool useSimdSampling,
+        CdBitCarrier? carrier = null)
     {
         ArgumentNullException.ThrowIfNull(output);
         if (!output.CanWrite) throw new ArgumentException("CD data output must be writable.", nameof(output));
         CdImageSampler sampler = new(image, parameters);
         bool sampleFour = useSimdSampling && sampler.SupportsSimd;
         Stopwatch stopwatch = Stopwatch.StartNew();
-        ProgressStream writer = new(output, plan.ContentLength, stopwatch, progress, cancellationToken);
+        // The carrier rearranges finished sectors, so it sits between the generator and the output.
+        CdBitCarrierStream? carrierStream = carrier?.Wrap(output, plan.DrawingStartLba, plan.DrawingEndLbaExclusive);
+        ProgressStream writer = new(carrierStream ?? output, plan.ContentLength, stopwatch, progress, cancellationToken);
         if (plan.FilesAtOuterRing)
             Iso9660ImageWriter.WriteOuterRingPrefix(plan.IsoLayout, writer, plan.DrawingStartLba, cancellationToken);
         else
@@ -140,6 +204,7 @@ public static class CdDataImageGenerator
         }
         if (plan.FilesAtOuterRing)
             Iso9660ImageWriter.WriteOuterRingSuffix(plan.IsoLayout, writer, plan.DrawingEndLbaExclusive, cancellationToken);
+        carrierStream?.Complete();
         writer.Flush();
         stopwatch.Stop();
         progress?.Invoke(new CdProgress(writer.CompletedBytes, plan.ContentLength, stopwatch.Elapsed));
@@ -167,6 +232,9 @@ public static class CdDataImageGenerator
         long frameByte = checked(lba * CdDiscParameters.BytesPerSector + PayloadOffset + payloadOffset) ^ 1L;
         return frameByte + PhysicalOffsets[frameByte % CddaInterleaveTable.BytesPerFrame];
     }
+
+    /// <summary>The scrambler byte applied to payload offset <paramref name="payloadOffset"/>.</summary>
+    internal static byte PayloadMask(int payloadOffset) => ScrambleMask[payloadOffset + PayloadOffset - 12];
 
     private static int[] BuildPhysicalOffsets()
     {

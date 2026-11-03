@@ -57,14 +57,26 @@ public static class CarrierBlockFormat
     /// Embedding never changes this number, so it can be measured before anything is written.
     /// </summary>
     public static int CountCapacity(ReadOnlySpan<byte> symbols)
+        => CountCapacity(symbols, UniformGroups(symbols.Length));
+
+    /// <summary>Stream bits one block can carry, given its raw capacity (0 when it cannot hold a frame).</summary>
+    public static int UsableDataBits(int capacityBits)
+        => capacityBits <= HeaderBits ? 0 : Math.Min(capacityBits - HeaderBits, MaxDataBits);
+
+    /// <summary>
+    /// Raw bits for symbols split into groups of the given sizes (each 0..16, in order,
+    /// summing to the symbol count). A group with any invalid symbol carries nothing.
+    /// </summary>
+    public static int CountCapacity(ReadOnlySpan<byte> symbols, ReadOnlySpan<byte> groupSizes)
     {
-        ValidateLength(symbols.Length);
+        ValidateGroups(symbols.Length, groupSizes);
         int capacity = 0;
-        for (int start = 0; start < symbols.Length; start += CombinadicGroup.Size)
+        int start = 0;
+        foreach (byte size in groupSizes)
         {
             int ones = 0;
             bool valid = true;
-            foreach (byte symbol in symbols.Slice(start, CombinadicGroup.Size))
+            foreach (byte symbol in symbols.Slice(start, size))
             {
                 if (symbol > 1)
                 {
@@ -76,25 +88,24 @@ public static class CarrierBlockFormat
             }
 
             if (valid)
-                capacity += CombinadicGroup.CapacityBits(ones);
+                capacity += CombinadicGroup.CapacityBits(size, ones);
+            start += size;
         }
 
         return capacity;
     }
 
-    /// <summary>Stream bits one block can carry, given its raw capacity (0 when it cannot hold a frame).</summary>
-    public static int UsableDataBits(int capacityBits)
-        => capacityBits <= HeaderBits ? 0 : Math.Min(capacityBits - HeaderBits, MaxDataBits);
-
-    internal static int CountCapacity(ReadOnlySpan<byte> symbols, Span<sbyte> onesByGroup)
+    internal static int CountCapacity(
+        ReadOnlySpan<byte> symbols, ReadOnlySpan<byte> groupSizes, Span<sbyte> onesByGroup)
     {
         int capacity = 0;
-        for (int group = 0; group < onesByGroup.Length; group++)
+        int start = 0;
+        for (int group = 0; group < groupSizes.Length; group++)
         {
-            ReadOnlySpan<byte> block = symbols.Slice(group * CombinadicGroup.Size, CombinadicGroup.Size);
+            int size = groupSizes[group];
             int ones = 0;
             bool valid = true;
-            foreach (byte symbol in block)
+            foreach (byte symbol in symbols.Slice(start, size))
             {
                 if (symbol > 1)
                 {
@@ -107,7 +118,8 @@ public static class CarrierBlockFormat
 
             onesByGroup[group] = valid ? (sbyte)ones : (sbyte)-1;
             if (valid)
-                capacity += CombinadicGroup.CapacityBits(ones);
+                capacity += CombinadicGroup.CapacityBits(size, ones);
+            start += size;
         }
 
         return capacity;
@@ -118,6 +130,28 @@ public static class CarrierBlockFormat
         if (symbolCount == 0 || symbolCount % CombinadicGroup.Size != 0)
             throw new ArgumentException(
                 $"Symbol count must be a positive multiple of {CombinadicGroup.Size}.");
+    }
+
+    internal static void ValidateGroups(int symbolCount, ReadOnlySpan<byte> groupSizes)
+    {
+        int total = 0;
+        foreach (byte size in groupSizes)
+        {
+            if (size > CombinadicGroup.Size)
+                throw new ArgumentException($"A group holds at most {CombinadicGroup.Size} symbols.");
+            total += size;
+        }
+
+        if (total != symbolCount || symbolCount == 0)
+            throw new ArgumentException("Group sizes must add up to the (positive) symbol count.");
+    }
+
+    internal static byte[] UniformGroups(int symbolCount)
+    {
+        ValidateLength(symbolCount);
+        byte[] sizes = new byte[symbolCount / CombinadicGroup.Size];
+        Array.Fill(sizes, (byte)CombinadicGroup.Size);
+        return sizes;
     }
 
     internal static uint FrameCrc(ReadOnlySpan<byte> prefix, ReadOnlySpan<byte> data)
@@ -134,6 +168,7 @@ public sealed class CarrierBlockEncoder
     private readonly ICarrierBitSource _source;
     private sbyte[] _ones = [];
     private byte[] _frame = [];
+    private byte[] _uniform = [];
     private byte[] _data = new byte[(CarrierBlockFormat.MaxDataBits + 7) / 8];
 
     public CarrierBlockEncoder(ICarrierBitSource source)
@@ -152,18 +187,32 @@ public sealed class CarrierBlockEncoder
     /// <summary>
     /// Rearranges the white symbols inside every valid group so the block carries the next
     /// piece of the stream. The number of white symbols per group never changes.
-    /// <paramref name="symbols"/> holds 0 (dark), 1 (light) or <see cref="CarrierBlockFormat.InvalidSymbol"/>.
+    /// <paramref name="symbols"/> holds 0 (dark), 1 (light) or <see cref="CarrierBlockFormat.InvalidSymbol"/>,
+    /// split into groups of 16.
     /// </summary>
     public CarrierBlockInfo Encode(Span<byte> symbols)
     {
         CarrierBlockFormat.ValidateLength(symbols.Length);
-        int groups = symbols.Length / CombinadicGroup.Size;
+        if (_uniform.Length * CombinadicGroup.Size != symbols.Length)
+            _uniform = CarrierBlockFormat.UniformGroups(symbols.Length);
+        return Encode(symbols, _uniform);
+    }
+
+    /// <summary>
+    /// Same, for groups of the given sizes (each 0..16, in order). Symbols that sit close
+    /// together on the disc form one group, so the groups of a medium whose bytes are
+    /// interleaved need not be runs of consecutive symbols.
+    /// </summary>
+    public CarrierBlockInfo Encode(Span<byte> symbols, ReadOnlySpan<byte> groupSizes)
+    {
+        CarrierBlockFormat.ValidateGroups(symbols.Length, groupSizes);
+        int groups = groupSizes.Length;
         if (_ones.Length != groups)
         {
             _ones = new sbyte[groups];
         }
 
-        int capacity = CarrierBlockFormat.CountCapacity(symbols, _ones);
+        int capacity = CarrierBlockFormat.CountCapacity(symbols, groupSizes, _ones);
         if (IsComplete || capacity <= CarrierBlockFormat.HeaderBits)
             return new CarrierBlockInfo(false, NextOffset, 0, capacity);
 
@@ -208,19 +257,24 @@ public sealed class CarrierBlockEncoder
 
         // Spread the frame bits over the groups.
         int cursor = 0;
+        int start = 0;
         for (int group = 0; group < groups; group++)
         {
+            int size = groupSizes[group];
             int ones = _ones[group];
-            if (ones < 0)
-                continue;
-            int bits = CombinadicGroup.CapacityBits(ones);
-            uint value = 0;
-            for (int bit = 0; bit < bits; bit++)
-                value = (value << 1) | (uint)BitBuffer.Get(frame, cursor++);
-            ushort mask = CombinadicGroup.Unrank(ones, value);
-            Span<byte> target = symbols.Slice(group * CombinadicGroup.Size, CombinadicGroup.Size);
-            for (int position = 0; position < CombinadicGroup.Size; position++)
-                target[position] = (byte)((mask >> position) & 1);
+            if (ones >= 0)
+            {
+                int bits = CombinadicGroup.CapacityBits(size, ones);
+                uint value = 0;
+                for (int bit = 0; bit < bits; bit++)
+                    value = (value << 1) | (uint)BitBuffer.Get(frame, cursor++);
+                ushort mask = CombinadicGroup.Unrank(size, ones, value);
+                Span<byte> target = symbols.Slice(start, size);
+                for (int position = 0; position < size; position++)
+                    target[position] = (byte)((mask >> position) & 1);
+            }
+
+            start += size;
         }
 
         NextOffset = offset + (ulong)dataBits;
@@ -233,19 +287,29 @@ public sealed class CarrierBlockDecoder
 {
     private sbyte[] _ones = [];
     private byte[] _frame = [];
+    private byte[] _uniform = [];
 
     /// <summary>
-    /// Attempts to read a frame from <paramref name="symbols"/>. Ordinary data, filesystem
-    /// sectors and damaged blocks fail the group or CRC checks and return false.
+    /// Attempts to read a frame from <paramref name="symbols"/> (groups of 16). Ordinary
+    /// data, filesystem sectors and damaged blocks fail the group or CRC checks and return false.
     /// </summary>
     public bool TryDecode(ReadOnlySpan<byte> symbols, out CarrierBlock? block)
     {
-        block = null;
         CarrierBlockFormat.ValidateLength(symbols.Length);
-        int groups = symbols.Length / CombinadicGroup.Size;
+        if (_uniform.Length * CombinadicGroup.Size != symbols.Length)
+            _uniform = CarrierBlockFormat.UniformGroups(symbols.Length);
+        return TryDecode(symbols, _uniform, out block);
+    }
+
+    /// <summary>Same, for groups of the given sizes; they must match the encoder's.</summary>
+    public bool TryDecode(ReadOnlySpan<byte> symbols, ReadOnlySpan<byte> groupSizes, out CarrierBlock? block)
+    {
+        block = null;
+        CarrierBlockFormat.ValidateGroups(symbols.Length, groupSizes);
+        int groups = groupSizes.Length;
         if (_ones.Length != groups)
             _ones = new sbyte[groups];
-        int capacity = CarrierBlockFormat.CountCapacity(symbols, _ones);
+        int capacity = CarrierBlockFormat.CountCapacity(symbols, groupSizes, _ones);
         if (capacity <= CarrierBlockFormat.HeaderBits)
             return false;
 
@@ -255,21 +319,26 @@ public sealed class CarrierBlockDecoder
         Span<byte> frame = _frame.AsSpan(0, frameBytes);
         frame.Clear();
         int cursor = 0;
+        int start = 0;
         for (int group = 0; group < groups; group++)
         {
+            int size = groupSizes[group];
             int ones = _ones[group];
-            if (ones < 0)
-                continue;
-            ushort mask = 0;
-            ReadOnlySpan<byte> source = symbols.Slice(group * CombinadicGroup.Size, CombinadicGroup.Size);
-            for (int position = 0; position < CombinadicGroup.Size; position++)
-                mask |= (ushort)(source[position] << position);
-            uint rank = CombinadicGroup.Rank(mask);
-            int bits = CombinadicGroup.CapacityBits(ones);
-            if (rank >> bits != 0)
-                return false; // Not a pattern the encoder can produce.
-            for (int bit = bits - 1; bit >= 0; bit--)
-                BitBuffer.Set(frame, cursor++, (int)((rank >> bit) & 1));
+            if (ones >= 0)
+            {
+                ushort mask = 0;
+                ReadOnlySpan<byte> source = symbols.Slice(start, size);
+                for (int position = 0; position < size; position++)
+                    mask |= (ushort)(source[position] << position);
+                uint rank = CombinadicGroup.Rank(mask);
+                int bits = CombinadicGroup.CapacityBits(size, ones);
+                if (rank >> bits != 0)
+                    return false; // Not a pattern the encoder can produce.
+                for (int bit = bits - 1; bit >= 0; bit--)
+                    BitBuffer.Set(frame, cursor++, (int)((rank >> bit) & 1));
+            }
+
+            start += size;
         }
 
         Span<byte> header = stackalloc byte[CarrierBlockFormat.HeaderBytes];
