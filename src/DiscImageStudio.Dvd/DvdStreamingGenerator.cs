@@ -19,7 +19,8 @@ public sealed record DvdStreamingOptions(
     double PitchLinear = 0,
     double PitchQuadratic = 0,
     double PitchCubic = 0,
-    ToneProfile? Tone = null)
+    ToneProfile? Tone = null,
+    IDvdBlockPayloadProcessor? PayloadProcessor = null)
 {
     /// <summary>Physical channel-bit length of the DVD scheme; the UI no longer exposes it.</summary>
     public const double StandardChannelBitLengthNm = 133.3;
@@ -167,6 +168,47 @@ public static class DvdStreamingGenerator
         }
 
         return new DvdHybridStreamingPlan(isoLayout, drawingStartLba, drawingEndLba);
+    }
+
+    /// <summary>
+    /// Measures how much data the drawing can carry (see <see cref="DvdBitCarrierEmbedder"/>)
+    /// without writing an image. Pass the hybrid <paramref name="plan"/> to measure only the
+    /// drawing range that follows the filesystem. The result is exact, not an estimate.
+    /// </summary>
+    public static DvdCarrierCapacity EstimateCarrierCapacity(
+        string imagePath,
+        DvdStreamingOptions options,
+        DvdHybridStreamingPlan? plan = null,
+        Action<DvdStreamingProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(imagePath);
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        if (plan is not null && plan.TotalSectors != options.TotalSectors)
+        {
+            throw new ArgumentException(
+                "Hybrid layout and DVD streaming options describe different disc sizes.",
+                nameof(plan));
+        }
+
+        MultiBlockSolveOptions solveOptions = CreateSolveOptions(
+            options,
+            plan?.DrawingStartLba ?? 0,
+            plan?.DrawingSectors ?? options.TotalSectors);
+        long prefixBytes = plan is null
+            ? 0
+            : checked((long)plan.DrawingStartLba * DvdEccBlockEncoder.PayloadBytesPerSector);
+        return FastDispersionImageWriter.MeasureCarrierCapacity(
+            Path.GetFullPath(imagePath),
+            solveOptions,
+            value => progress?.Invoke(new DvdStreamingProgress(
+                checked(prefixBytes + value.BytesWritten),
+                options.ContentLength,
+                value.CompletedBlocks,
+                value.TotalBlocks,
+                value.Elapsed)),
+            cancellationToken);
     }
 
     public static DvdStreamingSummary Generate(
@@ -341,7 +383,10 @@ public static class DvdStreamingGenerator
             ZeroInitialPayload: false,
             imageMapping,
             Algorithm: SolverAlgorithm.Dispersion,
-            FastParallelism: options.FastParallelism);
+            FastParallelism: options.FastParallelism)
+        {
+            PayloadProcessor = options.PayloadProcessor,
+        };
     }
 
     private static uint AlignToEccBlock(uint lba, uint psnOffset)

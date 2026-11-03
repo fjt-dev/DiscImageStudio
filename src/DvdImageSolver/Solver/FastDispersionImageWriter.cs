@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.Intrinsics;
+using DiscImageStudio.Core.Carrier;
 using DvdImageSolver.Encoding;
 
 namespace DvdImageSolver.Solver;
@@ -182,6 +183,100 @@ public static class FastDispersionImageWriter
         PayloadImageSampler sampler = new(
             sampleScrambledByte, options.ImageMapping, samplesScrambledBytes: true);
         return WriteSampledStream(sampler, output, options, progress, cancellationToken);
+    }
+
+    /// <summary>
+    /// Measures how much data the drawing of <paramref name="imagePath"/> can carry, without
+    /// writing any image. Samples exactly as generation does, so the result is exact.
+    /// <paramref name="progress"/> is called serially, in block order.
+    /// </summary>
+    public static DvdCarrierCapacity MeasureCarrierCapacity(
+        string imagePath,
+        MultiBlockSolveOptions options,
+        Action<FastDvdStreamProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        Validate(options);
+        RasterImage image = RasterImage.Load(imagePath);
+        return MeasureCapacity(new PayloadImageSampler(image, options.ImageMapping),
+            options, progress, cancellationToken);
+    }
+
+    /// <summary>
+    /// Same measurement for a scrambled-byte pattern (see
+    /// <see cref="WriteScrambledCodewordPatternStream"/>).
+    /// </summary>
+    public static DvdCarrierCapacity MeasureCarrierCapacity(
+        Func<DvdCodewordSample, byte> sampleScrambledByte,
+        MultiBlockSolveOptions options,
+        Action<FastDvdStreamProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(sampleScrambledByte);
+        Validate(options);
+        return MeasureCapacity(
+            new PayloadImageSampler(sampleScrambledByte, options.ImageMapping, samplesScrambledBytes: true),
+            options, progress, cancellationToken);
+    }
+
+    private static DvdCarrierCapacity MeasureCapacity(
+        PayloadImageSampler sampler,
+        MultiBlockSolveOptions options,
+        Action<FastDvdStreamProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        int totalBlocks = checked((int)(options.FillSectors / DvdEccBlockEncoder.SectorCount));
+        int parallelism = options.FastParallelism == 0
+            ? Environment.ProcessorCount
+            : options.FastParallelism;
+        ParallelOptions parallelOptions = new()
+        {
+            MaxDegreeOfParallelism = parallelism,
+            CancellationToken = cancellationToken,
+        };
+        int batchCapacity = Math.Min(totalBlocks, Math.Max(1, checked(parallelism * 2)));
+        GeneratedBlock[] generated = CreateBatchBuffers(batchCapacity);
+        byte[][] symbols = new byte[batchCapacity][];
+        for (int index = 0; index < symbols.Length; index++)
+            symbols[index] = new byte[DvdEccBlockEncoder.PayloadBytesPerBlock];
+        int[] capacities = new int[batchCapacity];
+        long totalBytes = checked((long)options.FillSectors * DvdEccBlockEncoder.PayloadBytesPerSector);
+        long rawBits = 0, dataBits = 0, carrying = 0;
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        for (int batchStart = 0; batchStart < totalBlocks; batchStart += batchCapacity)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            int batchCount = Math.Min(batchCapacity, totalBlocks - batchStart);
+            Parallel.For(0, batchCount, parallelOptions, batchOffset =>
+            {
+                generated[batchOffset] = GenerateBlock(
+                    batchStart + batchOffset, sampler, options, generated[batchOffset].Payloads, cancellationToken);
+                DvdBitCarrier.BuildSymbols(
+                    generated[batchOffset].Payloads,
+                    checked(generated[batchOffset].Lba + options.PsnOffset),
+                    symbols[batchOffset]);
+                capacities[batchOffset] = CarrierBlockFormat.CountCapacity(symbols[batchOffset]);
+            });
+
+            for (int batchOffset = 0; batchOffset < batchCount; batchOffset++)
+            {
+                int usable = CarrierBlockFormat.UsableDataBits(capacities[batchOffset]);
+                rawBits += capacities[batchOffset];
+                dataBits += usable;
+                if (usable > 0)
+                    carrying++;
+                int completed = batchStart + batchOffset + 1;
+                progress?.Invoke(new FastDvdStreamProgress(
+                    completed,
+                    totalBlocks,
+                    generated[batchOffset].Lba,
+                    checked((long)completed * DvdEccBlockEncoder.PayloadBytesPerBlock),
+                    totalBytes,
+                    stopwatch.Elapsed));
+            }
+        }
+
+        return new DvdCarrierCapacity(totalBlocks, carrying, rawBits, dataBits);
     }
 
     private static void ValidateStream(Stream output, MultiBlockSolveOptions options)

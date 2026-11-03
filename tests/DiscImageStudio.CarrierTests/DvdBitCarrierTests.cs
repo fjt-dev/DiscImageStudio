@@ -12,7 +12,8 @@ internal static class DvdBitCarrierTests
     {
         TestEmbeddingThroughTheWriter();
         TestHybridPrefixAndDamage();
-        Console.WriteLine("dvd-bit-carrier: passed (density preserved per 16-byte group, determinism across parallelism, extraction, filesystem prefix, damage isolation)");
+        TestCapacityMeasurementIsExact();
+        Console.WriteLine("dvd-bit-carrier: passed (density preserved per 16-byte group, determinism across parallelism, extraction, filesystem prefix, damage isolation, exact capacity measurement)");
     }
 
     private static MultiBlockSolveOptions Options(uint startLba, int parallelism, IDvdBlockPayloadProcessor? processor)
@@ -156,5 +157,49 @@ internal static class DvdBitCarrierTests
             "data before the damage survives");
         Check.True(recovered.AsSpan(recovered.Length - 1000).SequenceEqual(data.AsSpan(data.Length - 1000)),
             "data after the damage is still in place");
+    }
+
+    private static void TestCapacityMeasurementIsExact()
+    {
+        MultiBlockSolveOptions options = Options(0, parallelism: 2, processor: null);
+        List<FastDvdStreamProgress> updates = [];
+        DvdCarrierCapacity capacity = FastDispersionImageWriter.MeasureCarrierCapacity(Pattern, options, updates.Add);
+        Check.Equal((long)Blocks, capacity.Blocks, "every block is measured");
+        Check.Equal(Blocks, updates.Count, "progress is reported per block");
+        Check.True(updates.Select(update => update.CompletedBlocks).SequenceEqual(Enumerable.Range(1, Blocks)),
+            "progress arrives in block order");
+        Check.True(capacity.MaxFileBytes > 1000 && capacity.BitsPerByte > 0.1, "a midtone pattern has real capacity");
+        Check.True(FastDispersionImageWriter.MeasureCarrierCapacity(Pattern, options with { FastParallelism = 1 })
+            == capacity, "the measurement does not depend on parallelism");
+
+        // Exactness: the largest file the measurement allows fits, one more byte does not.
+        byte[] data = new byte[capacity.MaxFileBytes + 1];
+        new Random(77).NextBytes(data);
+        for (long size = capacity.MaxFileBytes; size <= capacity.MaxFileBytes + 1; size++)
+        {
+            using MemoryStream part = new(data, 0, (int)size, writable: false);
+            using CarrierPayload payload = new(part);
+            DvdBitCarrierEmbedder embedder = new(payload);
+            byte[] disc = Generate(0, parallelism: 3, embedder);
+            DvdBitCarrierStats stats = embedder.Stats;
+            Check.Equal(capacity.RawBits, stats.CapacityBits, "embedding sees the capacity that was measured");
+            Check.Equal(capacity.DataBits, stats.UsableDataBits, "usable bits agree with the measurement");
+            Check.Equal(capacity.MaxFileBytes, stats.MaxFileBytes, "max file size agrees");
+            bool fits = size == capacity.MaxFileBytes;
+            Check.Equal(fits, stats.Complete, fits ? "a file of exactly the measured size is stored completely"
+                : "one byte more than the measured size cannot be stored");
+            if (fits)
+            {
+                using MemoryStream output = new();
+                Check.True(DvdBitCarrierExtractor.Extract(new MemoryStream(disc), output, PsnOffset).Complete
+                    && output.ToArray().AsSpan().SequenceEqual(data.AsSpan(0, (int)size)),
+                    "and it comes back intact");
+            }
+        }
+
+        // A drawing with no usable groups holds nothing.
+        DvdCarrierCapacity flat = FastDispersionImageWriter.MeasureCarrierCapacity(
+            _ => Dark, options);
+        Check.Equal(0L, flat.MaxFileBytes, "an all-dark drawing carries nothing");
     }
 }

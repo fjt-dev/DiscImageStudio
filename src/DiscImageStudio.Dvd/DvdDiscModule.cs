@@ -28,6 +28,7 @@ public sealed class DvdDiscModule : IOpticalDiscModule
                     new("data-dir", "Hybrid data folder", DiscOptionValueType.InputFolder),
                     new("file-position", "File placement", DiscOptionValueType.Choice, DefaultValue: "inner", Choices: ["inner", "outer"]),
                     new("embed-file", "File stored inside the drawing", DiscOptionValueType.InputFile),
+                    new("capacity-only", "Only measure how much the drawing can hold", DiscOptionValueType.Boolean, DefaultValue: "false"),
                 ]),
             new DiscCommandDescriptor(
                 "encode",

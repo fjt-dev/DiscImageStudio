@@ -27,14 +27,29 @@ DVD の絵柄は、ペイロード各バイトの値（スクランブル後 `Q`
 
 中間調で約 0.8 ビット/バイト、真っ黒・真っ白の平坦部は 0 です。
 
-### 容量の目安
+### 容量の事前測定
 
-絵柄に依存します。生成後に CLI が実際の容量を表示します。
+絵柄に依存するので、書き込む前に測れます。`--capacity-only true` は ISO を書かずに、生成と同じ標本化で全ブロックの容量だけを数えます。**見積もりではなく厳密値**です（埋め込みはグループ内の明の個数を変えないので、容量は書き込みの前後で一致します）。
+
+```bash
+disc-image-studio solve --image picture.png --total-sectors 2297888 --fill-sectors 2297888 \
+  --inner-radius-mm 24 --outer-radius-mm 58 --capacity-only true --embed-file secret.zip
+# capacity: at most 9525588 bytes (9.08 MiB) in 8172/16384 ECC blocks, 0.142 bit per drawn byte
+# fits: secret.zip is 2097152 bytes (22.0% of the capacity)
+```
+
+- ちょうど最大サイズのファイルは入り、1 バイトでも超えると入りません（テストと実機能で確認済み）。
+- ファイルが入らないときは終了コード 1 で、超過バイト数を表示します。
+- ISO を書かないのでディスクは使いませんが、標本化の計算量は生成とほぼ同じです（512 MiB の例で 28 秒、生成は 35 秒）。
+- ハイブリッド（`--data-dir`）では、ファイルシステムの後ろの描画範囲だけを測ります。
+- 画面などから使う場合は `DvdStreamingGenerator.EstimateCarrierCapacity` を呼びます。
+
+### 容量の目安
 
 - 中間調が多い絵（写真など）: 4.7 GB の DVD で数百 MB 規模
 - 黒・白ベタが多い絵: 数 MB まで下がります（検証用の暗い画像では 0.14 ビット/バイト）
 
-ファイルが入りきらない場合、`solve` は ISO を書き終えたあとエラー終了（終了コード 1）し、収まった分と必要量を表示します。
+`--capacity-only` を使わずに `--embed-file` を付けて生成し、ファイルが入りきらなかった場合は、ISO を書き終えたあとにエラー終了（終了コード 1）します。事前に `--capacity-only` で確認してください。
 
 ## 使い方
 
@@ -123,6 +138,7 @@ dotnet run --project tests/DiscImageStudio.CarrierTests -c Release
 - 3355 万グループすべてで、グループごとの明の個数が埋め込みの有無で変わらないこと。
 - ブロックを 1 つ壊しても、前後のデータが復元できること。
 - 512 MiB のイメージで、生成時間の増加が約 7%、抽出が約 1 秒であること。
+- 容量の事前測定が実際の埋め込みと厳密に一致すること（最大サイズのファイルは入り、1 バイト超過は入らない）。
 
 **未検証**:
 
@@ -133,6 +149,6 @@ dotnet run --project tests/DiscImageStudio.CarrierTests -c Release
 その他の制限:
 
 - DVD の単層のみです。CD・Blu-ray は未対応です（コーデックは媒体に依存しないので、アダプタを足せば対応できます）。
-- GUI からは使えません（`DvdStreamingOptions` への接続は未実装）。
+- GUI からは使えません。`DvdStreamingOptions` には `PayloadProcessor` と、容量測定の `DvdStreamingGenerator.EstimateCarrierCapacity` を用意してありますが、画面は未実装です。
 - データは暗号化・誤り訂正の追加はしていません。読めないブロックの分は欠落します（上位の誤り訂正は今後の拡張です）。
 - 単独の `A5`/`92` 以外（アルファ値で除外した領域など）を含むグループには載せません。

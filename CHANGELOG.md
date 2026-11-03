@@ -4,11 +4,11 @@
 
 ### 中文
 
-- **实验性功能：绘图区数据搬运（DVD，仅 CLI）。** `solve --embed-file FILE` 把任意文件写进绘图区本身：每 16 字节为一组，保持组内亮字节个数（即画面）不变，仅用亮暗字节的排列顺序携带数据，每组可携带 ⌊log₂ C(16,k)⌋ 比特。读回用 `extract --iso IMAGE --output FILE`，无需原图。每个 ECC 块自带偏移与 CRC-32，损坏的块只丢失自身数据。详见 `docs/BIT_CARRIER.md`。尚未在实盘上验证。
+- **实验性功能：绘图区数据搬运（DVD，仅 CLI）。** `solve --embed-file FILE` 把任意文件写进绘图区本身：每 16 字节为一组，保持组内亮字节个数（即画面）不变，仅用亮暗字节的排列顺序携带数据，每组可携带 ⌊log₂ C(16,k)⌋ 比特。读回用 `extract --iso IMAGE --output FILE`，无需原图。每个 ECC 块自带偏移与 CRC-32，损坏的块只丢失自身数据。新增 `solve --capacity-only true`：不写入 ISO，按生成时相同的采样精确测出绘图区能容纳的文件大小，并可用 `--embed-file` 检查文件是否放得下。详见 `docs/BIT_CARRIER.md`。尚未在实盘上验证。
 
 ### English
 
-- **Experimental: data inside the drawing (DVD, CLI only).** `solve --embed-file FILE` stores any file in the drawing area itself. For every group of 16 payload bytes the number of light bytes (and therefore the picture) is unchanged; only their order carries data, up to floor(log2 C(16,k)) bits per group. `extract --iso IMAGE --output FILE` recovers it without the source image. Each ECC block carries its own stream offset and CRC-32, so a damaged block loses only its own data. See `docs/BIT_CARRIER.md`. Not yet verified on a physical disc.
+- **Experimental: data inside the drawing (DVD, CLI only).** `solve --embed-file FILE` stores any file in the drawing area itself. For every group of 16 payload bytes the number of light bytes (and therefore the picture) is unchanged; only their order carries data, up to floor(log2 C(16,k)) bits per group. `extract --iso IMAGE --output FILE` recovers it without the source image. Each ECC block carries its own stream offset and CRC-32, so a damaged block loses only its own data. `solve --capacity-only true` measures exactly how large a file the drawing can hold without writing an ISO (add `--embed-file` to check that a file fits). See `docs/BIT_CARRIER.md`. Not yet verified on a physical disc.
 
 ## [1.3.6] - 2026-11-02
 

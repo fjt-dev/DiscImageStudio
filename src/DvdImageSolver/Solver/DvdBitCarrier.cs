@@ -17,14 +17,33 @@ public sealed record DvdBitCarrierStats(
     long BlocksProcessed,
     long BlocksCarrying,
     long CapacityBits,
+    long UsableDataBits,
     ulong StreamBitsCarried,
     ulong StreamBitsTotal)
 {
     public bool Complete => StreamBitsCarried >= StreamBitsTotal;
 
-    /// <summary>User-visible capacity in bytes, minus the per-block frame headers.</summary>
-    public long CapacityBytes => Math.Max(0, CapacityBits
-        - (BlocksProcessed * CarrierBlockFormat.HeaderBits)) / 8;
+    /// <summary>Largest file this drawing can hold, container header excluded.</summary>
+    public long MaxFileBytes => Math.Max(0, (UsableDataBits / 8) - CarrierContainer.HeaderBytes);
+}
+
+/// <summary>
+/// What a drawing can hold, measured without writing it. This is exact, not an estimate:
+/// embedding never changes how many light bytes a group has, and the measurement samples
+/// the image exactly as generation does.
+/// </summary>
+/// <param name="RawBits">Bits the arrangements of all blocks can hold, frame headers included.</param>
+/// <param name="DataBits">Stream bits the blocks can carry once their frame headers are paid.</param>
+public sealed record DvdCarrierCapacity(long Blocks, long BlocksCarrying, long RawBits, long DataBits)
+{
+    /// <summary>Largest file that fits, container header excluded.</summary>
+    public long MaxFileBytes => Math.Max(0, (DataBits / 8) - CarrierContainer.HeaderBytes);
+
+    /// <summary>Average stored bits per drawn payload byte.</summary>
+    public double BitsPerByte => Blocks == 0 ? 0
+        : (double)DataBits / (Blocks * (double)DvdEccBlockEncoder.PayloadBytesPerBlock);
+
+    public bool Fits(long fileBytes) => fileBytes <= MaxFileBytes;
 }
 
 /// <summary>
@@ -45,6 +64,7 @@ public sealed class DvdBitCarrierEmbedder : IDvdBlockPayloadProcessor
     private long _blocksProcessed;
     private long _blocksCarrying;
     private long _capacityBits;
+    private long _usableBits;
 
     public DvdBitCarrierEmbedder(ICarrierBitSource source)
     {
@@ -54,7 +74,7 @@ public sealed class DvdBitCarrierEmbedder : IDvdBlockPayloadProcessor
     }
 
     public DvdBitCarrierStats Stats => new(
-        _blocksProcessed, _blocksCarrying, _capacityBits, _encoder.NextOffset, _source.TotalBits);
+        _blocksProcessed, _blocksCarrying, _capacityBits, _usableBits, _encoder.NextOffset, _source.TotalBits);
 
     public void Process(uint lba, uint psnOffset, Span<byte> payloads)
     {
@@ -65,6 +85,7 @@ public sealed class DvdBitCarrierEmbedder : IDvdBlockPayloadProcessor
         CarrierBlockInfo info = _encoder.Encode(_symbols);
         _blocksProcessed++;
         _capacityBits += info.CapacityBits;
+        _usableBits += CarrierBlockFormat.UsableDataBits(info.CapacityBits);
         if (!info.Used)
             return;
         _blocksCarrying++;

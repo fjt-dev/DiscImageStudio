@@ -52,6 +52,40 @@ public static class CarrierBlockFormat
     /// <summary>Marks a symbol that is not one of the two pattern symbols.</summary>
     public const byte InvalidSymbol = 2;
 
+    /// <summary>
+    /// Raw bits the arrangement of <paramref name="symbols"/> can hold (frame header included).
+    /// Embedding never changes this number, so it can be measured before anything is written.
+    /// </summary>
+    public static int CountCapacity(ReadOnlySpan<byte> symbols)
+    {
+        ValidateLength(symbols.Length);
+        int capacity = 0;
+        for (int start = 0; start < symbols.Length; start += CombinadicGroup.Size)
+        {
+            int ones = 0;
+            bool valid = true;
+            foreach (byte symbol in symbols.Slice(start, CombinadicGroup.Size))
+            {
+                if (symbol > 1)
+                {
+                    valid = false;
+                    break;
+                }
+
+                ones += symbol;
+            }
+
+            if (valid)
+                capacity += CombinadicGroup.CapacityBits(ones);
+        }
+
+        return capacity;
+    }
+
+    /// <summary>Stream bits one block can carry, given its raw capacity (0 when it cannot hold a frame).</summary>
+    public static int UsableDataBits(int capacityBits)
+        => capacityBits <= HeaderBits ? 0 : Math.Min(capacityBits - HeaderBits, MaxDataBits);
+
     internal static int CountCapacity(ReadOnlySpan<byte> symbols, Span<sbyte> onesByGroup)
     {
         int capacity = 0;

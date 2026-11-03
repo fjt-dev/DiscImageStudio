@@ -44,6 +44,7 @@ internal static class Program
         uint fillSectors = arguments.GetUInt("fill-sectors", DvdEccBlockEncoder.SectorCount);
         if (arguments.Has("data-dir")
             || arguments.Has("embed-file")
+            || arguments.Has("capacity-only")
             || fillSectors != DvdEccBlockEncoder.SectorCount
             || ReadBoolean(arguments, "fast-output", fallback: false))
         {
@@ -423,7 +424,8 @@ internal static class Program
             throw new ArgumentException("Range or fast output requires --image and does not accept --target.");
         }
 
-        string isoOutputPath = arguments.Require("iso-output");
+        bool capacityOnly = ReadBoolean(arguments, "capacity-only", fallback: false);
+        string isoOutputPath = capacityOnly ? arguments.Get("iso-output", string.Empty) : arguments.Require("iso-output");
         string[] unsupported =
         [
             "output",
@@ -469,12 +471,15 @@ internal static class Program
         }
 
         string? embedFile = arguments.Has("embed-file") ? arguments.Require("embed-file") : null;
-        if (embedFile is not null && (!fastOutput || algorithm != SolverAlgorithm.Dispersion))
+        if ((embedFile is not null || capacityOnly) && (!fastOutput || algorithm != SolverAlgorithm.Dispersion))
         {
             throw new ArgumentException(
-                "--embed-file needs the fast dispersion writer: add --fast-output true --algorithm dispersion "
-                + "(hybrid --data-dir mode already uses it).");
+                "--embed-file and --capacity-only need the fast dispersion writer: add --fast-output true "
+                + "--algorithm dispersion (hybrid --data-dir mode already uses it).");
         }
+
+        if (capacityOnly && embedFile is not null && !File.Exists(embedFile))
+            throw new FileNotFoundException("The --embed-file does not exist.", embedFile);
 
         using CarrierPayload? carrierPayload = embedFile is null ? null : CarrierPayload.FromFile(embedFile);
         DvdBitCarrierEmbedder? carrier = carrierPayload is null ? null : new DvdBitCarrierEmbedder(carrierPayload);
@@ -546,12 +551,21 @@ internal static class Program
                     "The filesystem leaves no complete ECC Block for drawing in the selected file layout.");
             }
 
-            hybridIso = HybridIsoImageWriter.Create(isoLayout, isoOutputPath);
+            if (capacityOnly)
+            {
+                Console.WriteLine(
+                    $"hybrid layout: files={isoLayout.FileCount}, directories={isoLayout.DirectoryCount}, "
+                    + $"files={(filesAtOuterRing ? "outer" : "inner")}, drawing LBA {lba}..{lba + fillSectors - 1}");
+            }
+            else
+            {
+                hybridIso = HybridIsoImageWriter.Create(isoLayout, isoOutputPath);
 
-            Console.WriteLine(
-                $"hybrid ISO: files={hybridIso.FileCount}, directories={hybridIso.DirectoryCount}, "
-                + $"data={hybridIso.FileBytes} bytes, filesystem end LBA={hybridIso.DataEndLbaExclusive}, "
-                + $"files={(filesAtOuterRing ? "outer" : "inner")}, drawing LBA {lba}..{lba + fillSectors - 1}");
+                Console.WriteLine(
+                    $"hybrid ISO: files={hybridIso.FileCount}, directories={hybridIso.DirectoryCount}, "
+                    + $"data={hybridIso.FileBytes} bytes, filesystem end LBA={hybridIso.DataEndLbaExclusive}, "
+                    + $"files={(filesAtOuterRing ? "outer" : "inner")}, drawing LBA {lba}..{lba + fillSectors - 1}");
+            }
             if (!fastOutput)
             {
                 Console.WriteLine($"replaying inner-ring modulation boundary: 0..{lba - 1}");
@@ -596,6 +610,8 @@ internal static class Program
         };
         int totalBlocks = checked((int)(fillSectors / DvdEccBlockEncoder.SectorCount));
         int progressEvery = Math.Max(1, totalBlocks / 100);
+        if (capacityOnly)
+            return ReportCarrierCapacity(arguments.Require("image"), options, embedFile);
         if (fastOutput)
         {
             return WriteFastDispersionImage(
@@ -771,6 +787,50 @@ internal static class Program
         return 0;
     }
 
+    /// <summary>
+    /// Measures what the drawing can carry without writing an ISO. Exact: it samples the image
+    /// and builds every block as generation does, then adds up the arrangement capacity.
+    /// </summary>
+    private static int ReportCarrierCapacity(string imagePath, MultiBlockSolveOptions options, string? embedFile)
+    {
+        int totalBlocks = checked((int)(options.FillSectors / DvdEccBlockEncoder.SectorCount));
+        int every = Math.Max(1, totalBlocks / 20);
+        Console.WriteLine(
+            $"measuring carrier capacity: LBA {options.StartLba}..{checked(options.StartLba + options.FillSectors - 1)}, "
+            + $"ECC blocks={totalBlocks}, no image is written");
+        DvdCarrierCapacity capacity = FastDispersionImageWriter.MeasureCarrierCapacity(
+            imagePath,
+            options,
+            progress =>
+            {
+                if (progress.CompletedBlocks == progress.TotalBlocks || progress.CompletedBlocks % every == 0)
+                {
+                    Console.WriteLine(
+                        $"block {progress.CompletedBlocks}/{progress.TotalBlocks}, "
+                        + $"elapsed={progress.Elapsed.TotalSeconds:F1}s");
+                }
+            });
+        Console.WriteLine(
+            $"capacity: at most {capacity.MaxFileBytes} bytes ({capacity.MaxFileBytes / (1024.0 * 1024):F2} MiB) "
+            + $"in {capacity.BlocksCarrying}/{capacity.Blocks} ECC blocks, "
+            + $"{capacity.BitsPerByte:F3} bit per drawn byte");
+        if (embedFile is null)
+            return 0;
+        long size = new FileInfo(embedFile).Length;
+        if (capacity.Fits(size))
+        {
+            Console.WriteLine(
+                $"fits: {embedFile} is {size} bytes ({100.0 * size / Math.Max(1, capacity.MaxFileBytes):F1}% of the capacity)");
+            return 0;
+        }
+
+        Console.Error.WriteLine(
+            $"error: {embedFile} is {size} bytes but this drawing holds at most {capacity.MaxFileBytes}. "
+            + $"It is too large by {size - capacity.MaxFileBytes} byte(s); use a smaller file, a brighter or more "
+            + "midtone image, or a larger drawing area.");
+        return 1;
+    }
+
     private static object DescribeBitCarrier(DvdBitCarrierStats stats, string embeddedFile) => new
     {
         format = "dvd-bit-per-byte-v1",
@@ -780,7 +840,7 @@ internal static class Program
         storedBytes = stats.StreamBitsCarried / 8,
         complete = stats.Complete,
         blocksCarrying = stats.BlocksCarrying,
-        drawingCapacityBytes = stats.CapacityBytes,
+        maxFileBytes = stats.MaxFileBytes,
     };
 
     private static int Extract(CliArguments arguments)
@@ -930,13 +990,14 @@ internal static class Program
         {
             DvdBitCarrierStats carried = carrier.Stats;
             Console.WriteLine(
-                $"bit carrier: {carried.StreamBitsCarried / 8} of {carried.StreamBitsTotal / 8} bytes stored in "
-                + $"{carried.BlocksCarrying} ECC blocks (drawing capacity about {carried.CapacityBytes} bytes)");
+                $"bit carrier: {Math.Max(0, (long)(carried.StreamBitsCarried / 8) - CarrierContainer.HeaderBytes)} of "
+                + $"{(long)(carried.StreamBitsTotal / 8) - CarrierContainer.HeaderBytes} bytes stored in "
+                + $"{carried.BlocksCarrying} ECC blocks (this drawing holds at most {carried.MaxFileBytes} bytes)");
             if (!carried.Complete)
             {
                 Console.Error.WriteLine(
-                    $"error: the drawing holds only about {carried.CapacityBytes} bytes but "
-                    + $"{embedFile} needs {carried.StreamBitsTotal / 8}. The ISO was written without the "
+                    $"error: the drawing holds at most {carried.MaxFileBytes} bytes but "
+                    + $"{embedFile} is {carried.StreamBitsTotal / 8 - CarrierContainer.HeaderBytes} bytes. The ISO was written without the "
                     + "complete file; use a smaller file, a lighter-toned image or a larger drawing area.");
                 return 1;
             }
@@ -1559,6 +1620,8 @@ internal static class Program
               --data-dir DIR            Hybrid disc: store this directory together with the drawing
               --file-position MODE      inner (default) or outer; outer requires --data-dir
               --drawing-start-lba N     Hybrid override; must follow all files and align to an ECC Block
+              --capacity-only true      Measure how much a drawing can carry, writing no image. Exact
+                                        (same sampling as generation); add --embed-file to check a file fits.
               --embed-file FILE         Store FILE inside the drawing itself (one bit per byte channel).
                                         The picture keeps its tones; only the order of light and dark
                                         bytes inside each 16-byte group carries data. Needs fast output.
