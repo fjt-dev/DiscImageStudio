@@ -289,6 +289,15 @@ public sealed class CarrierBlockDecoder
     private byte[] _frame = [];
     private byte[] _uniform = [];
 
+    /// <summary>Raw bits the symbols of the last <c>TryDecode</c> call could hold, whether or not it decoded.</summary>
+    public int LastCapacityBits { get; private set; }
+
+    /// <summary>
+    /// Share of groups (0..1) of the last call whose symbols were all valid pattern symbols. Flat
+    /// black or white is fully valid and merely holds nothing; unread or corrupted data is mostly not.
+    /// </summary>
+    public double LastValidGroupFraction { get; private set; }
+
     /// <summary>
     /// Attempts to read a frame from <paramref name="symbols"/> (groups of 16). Ordinary
     /// data, filesystem sectors and damaged blocks fail the group or CRC checks and return false.
@@ -310,6 +319,15 @@ public sealed class CarrierBlockDecoder
         if (_ones.Length != groups)
             _ones = new sbyte[groups];
         int capacity = CarrierBlockFormat.CountCapacity(symbols, groupSizes, _ones);
+        LastCapacityBits = capacity;
+        int validGroups = 0;
+        for (int group = 0; group < groups; group++)
+        {
+            if (_ones[group] >= 0)
+                validGroups++;
+        }
+
+        LastValidGroupFraction = groups == 0 ? 0 : (double)validGroups / groups;
         if (capacity <= CarrierBlockFormat.HeaderBits)
             return false;
 

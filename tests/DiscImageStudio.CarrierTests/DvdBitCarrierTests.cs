@@ -13,7 +13,8 @@ internal static class DvdBitCarrierTests
         TestEmbeddingThroughTheWriter();
         TestHybridPrefixAndDamage();
         TestCapacityMeasurementIsExact();
-        Console.WriteLine("dvd-bit-carrier: passed (density preserved per 16-byte group, determinism across parallelism, extraction, filesystem prefix, damage isolation, exact capacity measurement)");
+        TestScanReport();
+        Console.WriteLine("dvd-bit-carrier: passed (density preserved per 16-byte group, determinism across parallelism, extraction, filesystem prefix, damage isolation, exact capacity measurement, scan report)");
     }
 
     private static MultiBlockSolveOptions Options(uint startLba, int parallelism, IDvdBlockPayloadProcessor? processor)
@@ -201,5 +202,42 @@ internal static class DvdBitCarrierTests
         DvdCarrierCapacity flat = FastDispersionImageWriter.MeasureCarrierCapacity(
             _ => Dark, options);
         Check.Equal(0L, flat.MaxFileBytes, "an all-dark drawing carries nothing");
+    }
+
+    private static void TestScanReport()
+    {
+        byte[] data = new byte[50_000];
+        new Random(61).NextBytes(data);
+        DvdBitCarrierEmbedder embedder = new(CarrierPayload.FromBytes(data));
+        byte[] disc = Generate(0, parallelism: 2, embedder);
+        Check.True(embedder.Stats.BlocksCarrying > 6, "the payload spans several blocks");
+
+        CarrierScanReport clean = new();
+        using MemoryStream sink = new();
+        DvdBitCarrierExtractor.Extract(new MemoryStream(disc), sink, PsnOffset, report: clean);
+        Check.True(clean.AcceptedSpan is not null && clean.SuspectFrameCount == 0 && clean.UnreadSectorCount == 0,
+            "an intact disc reports nothing suspicious");
+        Check.Equal(clean.FramesAccepted, (int)embedder.Stats.BlocksCarrying, "every carrying block is counted as decoded");
+
+        // A drive that cannot read a block and pads it with zeros (dd conv=noerror,sync).
+        byte[] unread = (byte[])disc.Clone();
+        Array.Clear(unread, 3 * 32768, 32768);
+        CarrierScanReport zeroed = new();
+        using MemoryStream part = new();
+        DvdBitCarrierExtractor.Extract(new MemoryStream(unread), part, PsnOffset, report: zeroed);
+        Check.Equal(16L, zeroed.UnreadSectorCount, "the 16 zero-filled sectors are reported as unread");
+        Check.True(zeroed.UnreadSectors.Any(range => range.Start == 48 && range.EndExclusive == 64), "at their LBAs");
+        Check.True(zeroed.SuspectFrames.Any(range => range.Start <= 48 && range.EndExclusive >= 64),
+            "and the block that should have carried data is flagged");
+
+        // Garbage instead of zeros (a drive returning wrong bytes): no zero sectors, but still flagged.
+        byte[] garbage = (byte[])disc.Clone();
+        new Random(9).NextBytes(garbage.AsSpan(4 * 32768, 32768));
+        CarrierScanReport noisy = new();
+        using MemoryStream part2 = new();
+        DvdBitCarrierExtractor.Extract(new MemoryStream(garbage), part2, PsnOffset, report: noisy);
+        Check.Equal(0L, noisy.UnreadSectorCount, "garbage is not mistaken for unread sectors");
+        Check.True(noisy.SuspectFrames.Any(range => range.Start <= 64 && range.EndExclusive >= 80),
+            "a block of wrong bytes is flagged");
     }
 }

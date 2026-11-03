@@ -192,11 +192,13 @@ public static class CdBitCarrierExtractor
     /// </summary>
     /// <param name="iso">Cooked 2048-byte sectors from LBA 0.</param>
     /// <param name="output">Readable, writable, seekable destination for the user data.</param>
+    /// <param name="report">Optional: filled with where frames are missing and which sectors look unread.</param>
     public static CarrierExtractResult Extract(
         Stream iso,
         Stream output,
         Action<CdBitCarrierExtractProgress>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        CarrierScanReport? report = null)
     {
         ArgumentNullException.ThrowIfNull(iso);
         ArgumentNullException.ThrowIfNull(output);
@@ -212,6 +214,8 @@ public static class CdBitCarrierExtractor
         int batch = parallelism * 2;
         byte[] buffer = new byte[checked(((batch * CdCarrierGeometry.FrameSectors) + CdCarrierGeometry.SectorSpan) * sectorBytes)];
         CarrierBlock?[] decoded = new CarrierBlock?[batch];
+        int[] capacities = new int[batch];
+        double[] validShare = new double[batch];
         CarrierAssembler assembler = new(output);
         ParallelOptions options = new() { MaxDegreeOfParallelism = parallelism, CancellationToken = cancellationToken };
         using ThreadLocal<(CarrierBlockDecoder Decoder, byte[] Symbols)> workers = new(
@@ -245,17 +249,30 @@ public static class CdBitCarrierExtractor
                 }
 
                 decoded[index] = decoder.TryDecode(symbols, groupSizes, out CarrierBlock? block) ? block : null;
+                capacities[index] = decoder.LastCapacityBits;
+                validShare[index] = decoder.LastValidGroupFraction;
             });
             for (int index = 0; index < count; index++)
             {
                 if (decoded[index] is { } block)
                     assembler.Add(block);
+                if (report is null)
+                    continue;
+                report.AddFrame(decoded[index] is not null, capacities[index], validShare[index]);
+                for (int sector = 0; sector < CdCarrierGeometry.FrameSectors; sector++)
+                {
+                    int at = ((index * CdCarrierGeometry.FrameSectors) + sector) * sectorBytes;
+                    if (buffer.AsSpan(at, sectorBytes).IndexOfAnyExcept((byte)0) < 0)
+                        report.AddZeroSector(((batchStart + index) * CdCarrierGeometry.FrameSectors) + sector);
+                }
             }
 
             frame += count;
             progress?.Invoke(new CdBitCarrierExtractProgress(frame, totalFrames, assembler.BlocksAccepted));
         }
 
+        report?.Complete(frame => new LbaRange(
+            frame * CdCarrierGeometry.FrameSectors, (frame + 1) * CdCarrierGeometry.FrameSectors));
         return assembler.Finish();
     }
 }

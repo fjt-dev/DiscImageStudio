@@ -23,7 +23,8 @@ internal static class CdBitCarrierTests
             Directory.Delete(directory, recursive: true);
         }
 
-        Console.WriteLine("cd-bit-carrier: passed (physical layout, eligibility, density preserved per physical group, filesystem untouched for inner and outer files, extraction, damage isolation, exact capacity measurement)");
+        TestScanReport();
+        Console.WriteLine("cd-bit-carrier: passed (physical layout, eligibility, density preserved per physical group, filesystem untouched for inner and outer files, extraction, damage isolation, exact capacity measurement, scan report)");
     }
 
     private static void TestGeometry()
@@ -202,6 +203,35 @@ internal static class CdBitCarrierTests
         byte[] rest = partial.ToArray();
         Check.True(rest.AsSpan(0, 800).SequenceEqual(data.AsSpan(0, 800)), "data before the damage survives");
         Check.True(rest.AsSpan(rest.Length - 800).SequenceEqual(data.AsSpan(data.Length - 800)), "data after the damage survives");
+    }
+
+    private static void TestScanReport()
+    {
+        const long sectors = 700, start = 37, end = 640;
+        Random random = new(99);
+        byte[] image = SyntheticDrawing(random, sectors, start, end);
+        byte[] data = new byte[60_000];
+        random.NextBytes(data);
+        using CarrierPayload payload = CarrierPayload.FromBytes(data);
+        byte[] embedded = Filter(image, payload, start, end, 2048, out CarrierStats stats);
+        Check.True(stats.BlocksCarrying > 6, "the payload spans several frames");
+
+        CarrierScanReport clean = new();
+        using MemoryStream sink = new();
+        CdBitCarrierExtractor.Extract(new MemoryStream(embedded), sink, report: clean);
+        Check.True(clean.AcceptedSpan is not null && clean.SuspectFrameCount == 0 && clean.UnreadSectorCount == 0,
+            "an intact disc reports nothing suspicious");
+
+        // Sectors 160..175 read back as zeros, as dd conv=noerror,sync would leave them.
+        byte[] unread = (byte[])embedded.Clone();
+        Array.Clear(unread, 160 * SectorBytes, 16 * SectorBytes);
+        CarrierScanReport zeroed = new();
+        using MemoryStream part = new();
+        CdBitCarrierExtractor.Extract(new MemoryStream(unread), part, report: zeroed);
+        Check.Equal(16L, zeroed.UnreadSectorCount, "the zero-filled sectors are reported as unread");
+        Check.True(zeroed.UnreadSectors.Any(range => range.Start == 160 && range.EndExclusive == 176), "at their LBAs");
+        Check.True(zeroed.SuspectFrames.Any(range => range.Start <= 160 && range.EndExclusive >= 176),
+            "and the frames that read them are flagged");
     }
 
     private static void WriteImage(string path, int size)

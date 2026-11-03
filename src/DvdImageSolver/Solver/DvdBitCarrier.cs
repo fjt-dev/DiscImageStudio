@@ -104,12 +104,14 @@ public static class DvdBitCarrierExtractor
     /// <param name="iso">Sector image, positioned at LBA 0 of the disc.</param>
     /// <param name="output">Readable, writable, seekable destination for the user data.</param>
     /// <param name="psnOffset">PSN of LBA 0; 0x30000 on a standard disc.</param>
+    /// <param name="report">Optional: filled with where frames are missing and which sectors look unread.</param>
     public static CarrierExtractResult Extract(
         Stream iso,
         Stream output,
         uint psnOffset = 0x30000,
         Action<DvdBitCarrierExtractProgress>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        CarrierScanReport? report = null)
     {
         ArgumentNullException.ThrowIfNull(iso);
         ArgumentNullException.ThrowIfNull(output);
@@ -125,6 +127,8 @@ public static class DvdBitCarrierExtractor
         for (int index = 0; index < batchSize; index++)
             raw[index] = new byte[DvdEccBlockEncoder.PayloadBytesPerBlock];
         CarrierBlock?[] decoded = new CarrierBlock?[batchSize];
+        int[] capacities = new int[batchSize];
+        double[] validShare = new double[batchSize];
         CarrierAssembler assembler = new(output);
         ParallelOptions options = new()
         {
@@ -149,17 +153,32 @@ public static class DvdBitCarrierExtractor
                 uint lba = checked((uint)(firstLba + ((batchStart + index) * DvdEccBlockEncoder.SectorCount)));
                 DvdBitCarrier.BuildSymbols(raw[index], checked(lba + psnOffset), symbols);
                 decoded[index] = decoder.TryDecode(symbols, out CarrierBlock? block) ? block : null;
+                capacities[index] = decoder.LastCapacityBits;
+                validShare[index] = decoder.LastValidGroupFraction;
             });
             for (int index = 0; index < count; index++)
             {
                 if (decoded[index] is { } block)
                     assembler.Add(block);
+                if (report is null)
+                    continue;
+                report.AddFrame(decoded[index] is not null, capacities[index], validShare[index]);
+                long blockFirstLba = firstLba + ((scanned + index) * DvdEccBlockEncoder.SectorCount);
+                for (int sector = 0; sector < DvdEccBlockEncoder.SectorCount; sector++)
+                {
+                    if (raw[index].AsSpan(sector * DvdEccBlockEncoder.PayloadBytesPerSector,
+                            DvdEccBlockEncoder.PayloadBytesPerSector).IndexOfAnyExcept((byte)0) < 0)
+                        report.AddZeroSector(blockFirstLba + sector);
+                }
             }
 
             scanned += count;
             progress?.Invoke(new DvdBitCarrierExtractProgress(scanned, totalBlocks, assembler.BlocksAccepted));
         }
 
+        report?.Complete(frame => new LbaRange(
+            firstLba + (frame * DvdEccBlockEncoder.SectorCount),
+            firstLba + ((frame + 1) * DvdEccBlockEncoder.SectorCount)));
         return assembler.Finish();
     }
 }

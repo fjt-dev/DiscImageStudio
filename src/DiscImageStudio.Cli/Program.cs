@@ -16,12 +16,15 @@ internal static class Program
                 foreach (DiscCommandDescriptor command in module.Descriptor.Commands)
                     Console.WriteLine($"  {command.Name,-20} {command.Description}");
             }
+            ImageCompareCommand.PrintHelp();
             return 0;
         }
 
         try
         {
-            return ConsoleModuleRunner.Run(args);
+            return args[0].Equals(ImageCompareCommand.Name, StringComparison.OrdinalIgnoreCase)
+                ? ImageCompareCommand.Run(args)
+                : ConsoleModuleRunner.Run(args);
         }
         catch (OperationCanceledException)
         {

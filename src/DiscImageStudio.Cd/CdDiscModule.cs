@@ -317,28 +317,31 @@ public sealed class CdDiscModule : IOpticalDiscModule
         using FileStream iso = new(isoPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 20,
             FileOptions.SequentialScan);
         using FileStream output = new(outputPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+        CarrierScanReport report = new();
         CarrierExtractResult result = CdBitCarrierExtractor.Extract(iso, output,
             value => progress?.Report(new DiscJobProgress(ModuleId, "extract",
                 $"scanned {value.FramesScanned}/{value.TotalFrames} frames", value.TotalFrames == 0 ? 1 : (double)value.FramesScanned / value.TotalFrames)),
-            cancellationToken);
+            cancellationToken, report);
+        string diagnosis = report.Describe();
         if (!result.HeaderFound)
         {
             output.Dispose();
             File.Delete(outputPath);
             return new DiscJobResult(ModuleId, request.Command, 1,
-                $"error: no carrier stream found ({result.BlocksAccepted} frames). Check that the image holds the disc from LBA 0.", null);
+                diagnosis + $"\nerror: no carrier stream found ({result.BlocksAccepted} frames). Check that the image holds the disc from LBA 0.", null);
         }
 
         if (!result.Complete)
         {
             return new DiscJobResult(ModuleId, request.Command, 1,
-                $"error: stream is incomplete: {result.MissingBits / 8} bytes missing of {result.DataLength}; "
+                diagnosis + $"\nerror: stream is incomplete: {result.MissingBits / 8} bytes missing of {result.DataLength}; "
                 + (result.MissingBits == 0 ? "CRC-32 mismatch. " : string.Empty)
                 + $"partial data written to {outputPath}", outputPath);
         }
 
         return new DiscJobResult(ModuleId, request.Command, 0,
-            $"extracted {result.DataLength} bytes from {result.BlocksAccepted} frames, CRC-32 verified: {outputPath}", outputPath);
+            diagnosis + $"\nextracted {result.DataLength} bytes from {result.BlocksAccepted} frames, CRC-32 verified: {outputPath}"
+            + $"\nsha256={CarrierScanReport.Sha256Hex(output)}", outputPath);
     }
 
     private static CdDiscParameters ReadParameters(CdCommandOptions options, CdDiscParameters? fallback = null)

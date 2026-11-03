@@ -855,6 +855,7 @@ internal static class Program
             FileOptions.SequentialScan);
         using FileStream output = new(outputPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
         int lastPercent = -1;
+        CarrierScanReport report = new();
         CarrierExtractResult result = DvdBitCarrierExtractor.Extract(iso, output, psnOffset, progress =>
         {
             int percent = progress.TotalBlocks == 0 ? 100 : (int)(progress.BlocksScanned * 100 / progress.TotalBlocks);
@@ -865,7 +866,8 @@ internal static class Program
                     $"scanned {progress.BlocksScanned}/{progress.TotalBlocks} ECC blocks, "
                     + $"frames={progress.BlocksAccepted}");
             }
-        });
+        }, report: report);
+        Console.WriteLine(report.Describe());
         if (!result.HeaderFound)
         {
             output.Dispose();
@@ -887,6 +889,7 @@ internal static class Program
 
         Console.WriteLine(
             $"extracted {result.DataLength} bytes from {result.BlocksAccepted} frames, CRC-32 verified: {outputPath}");
+        Console.WriteLine($"sha256={CarrierScanReport.Sha256Hex(output)}");
         return 0;
     }
 
