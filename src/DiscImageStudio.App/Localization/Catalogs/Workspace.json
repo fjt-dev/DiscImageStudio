@@ -928,5 +928,11 @@
     "en": " · embedded file {0} · {1:F2} MiB",
     "zh-TW": " · 內嵌檔案 {0} · {1:F2} MiB",
     "ja": " · 埋め込みファイル {0} · {1:F2} MiB"
+  },
+  "内嵌文件需要 CD 数据盘：请先选择一个文件夹（空文件夹也可以）。": {
+    "zh-CN": "内嵌文件需要 CD 数据盘：请先选择一个文件夹（空文件夹也可以）。",
+    "en": "A file stored in the drawing needs a CD data disc: choose a folder first (an empty folder is fine).",
+    "zh-TW": "內嵌檔案需要 CD 資料光碟：請先選擇一個資料夾（空資料夾也可以）。",
+    "ja": "絵柄領域へのファイル埋め込みには CD データディスクが必要です。先にフォルダーを選択してください（空のフォルダーでも構いません）。"
   }
 }

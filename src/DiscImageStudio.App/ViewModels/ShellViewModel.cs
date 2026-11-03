@@ -770,6 +770,7 @@ public partial class ShellViewModel : ObservableObject
         nameof(DiscParametersState.CdInterleave),
         nameof(DiscParametersState.CdDataDirectory),
         nameof(DiscParametersState.CdFilesAtOuterRing),
+        nameof(DiscParametersState.CdEmbedFilePath),
         nameof(DiscParametersState.CdVolumeLabel),
         nameof(DiscParametersState.DvdInnerRadius),
         nameof(DiscParametersState.DvdOuterRadius),

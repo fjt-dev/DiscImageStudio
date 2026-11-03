@@ -76,6 +76,7 @@ internal static class ProjectSession
                 state.CdActualOuterRadius = outer;
                 state.CdDataDirectory = outputs.DataDirectory;
                 state.CdFilesAtOuterRing = outputs.FilesAtOuterRing;
+                state.CdEmbedFilePath = outputs.EmbedFile ?? string.Empty;
                 state.CdVolumeLabel = string.IsNullOrWhiteSpace(outputs.VolumeLabel) ? "CD_IMAGE" : outputs.VolumeLabel;
                 state.CdOutputPath = outputs.OutputPath;
                 state.NormalizeCdOutputFormat();
@@ -139,7 +140,8 @@ internal static class ProjectSession
                     state.CdDataDirectory,
                     state.CdVolumeLabel,
                     state.CdInterleave,
-                    FilesAtOuterRing: state.CdFilesAtOuterRing);
+                    FilesAtOuterRing: state.CdFilesAtOuterRing,
+                    EmbedFile: string.IsNullOrWhiteSpace(state.CdEmbedFilePath) ? null : state.CdEmbedFilePath.Trim());
         }
     }
 

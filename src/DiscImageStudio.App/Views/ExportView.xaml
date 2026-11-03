@@ -106,7 +106,7 @@
 
             <!-- Reads back a file that was stored inside the drawing. It needs no source image:
                  the arrangement of the drawing's bytes carries everything. -->
-            <controls:VisibilityGate IsOpen="{Binding IsDvd}">
+            <controls:VisibilityGate IsOpen="{Binding CanExtractEmbedded}">
                 <controls:SectionCard Header="{loc:Text Xaml.ExtractAnEmbeddedFile}" IconKind="FileDown" Margin="0,24,0,0">
                     <StackPanel>
                         <TextBlock Style="{StaticResource HintText}" Margin="0,0,0,12" TextWrapping="Wrap"

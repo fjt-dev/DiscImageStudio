@@ -2,7 +2,9 @@ using DiscImageStudio.Localization;
 using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using DiscImageStudio.Cd;
 using DiscImageStudio.Core;
+using DiscImageStudio.Core.Carrier;
 using DiscImageStudio.Dvd;
 using DiscImageStudio.Imaging;
 using DiscImageStudio.Services;
@@ -34,7 +36,7 @@ public partial class ExportViewModel : ObservableObject
         BrowseDataCommand = new RelayCommand(BrowseData, () => !_shell.IsBusy);
         GenerateCommand = new AsyncRelayCommand(GenerateAsync, () => !_shell.IsBusy);
         BrowseEmbedFileCommand = new RelayCommand(BrowseEmbedFile, () => !_shell.IsBusy);
-        ClearEmbedFileCommand = new RelayCommand(() => _state.DvdEmbedFilePath = string.Empty, () => !_shell.IsBusy);
+        ClearEmbedFileCommand = new RelayCommand(ClearEmbedFile, () => !_shell.IsBusy);
         CheckEmbedCapacityCommand = new AsyncRelayCommand(CheckEmbedCapacityAsync, () => !_shell.IsBusy);
         BrowseExtractIsoCommand = new RelayCommand(BrowseExtractIso, () => !_shell.IsBusy);
         BrowseExtractOutputCommand = new RelayCommand(BrowseExtractOutput, () => !_shell.IsBusy);
@@ -48,6 +50,7 @@ public partial class ExportViewModel : ObservableObject
                 OnPropertyChanged(nameof(IsCd));
                 OnPropertyChanged(nameof(IsDvd));
                 OnPropertyChanged(nameof(IsBluRay));
+                OnPropertyChanged(nameof(CanExtractEmbedded));
                 OnPropertyChanged(nameof(FamilyLabel));
                 OnPropertyChanged(nameof(GenerateButtonText));
                 UpdateSourceSummary();
@@ -87,6 +90,9 @@ public partial class ExportViewModel : ObservableObject
     public bool IsDvd => _shell.CurrentProject?.IsDvd ?? false;
 
     public bool IsBluRay => _shell.CurrentProject?.IsBluRay ?? false;
+
+    /// <summary>DVD and CD data discs can hold a file inside the drawing.</summary>
+    public bool CanExtractEmbedded => IsDvd || IsCd;
 
     /// <summary>False while the design page has no layers; the source row then offers the
     /// jump to where the picture comes from instead of a dead end.</summary>
@@ -150,12 +156,35 @@ public partial class ExportViewModel : ObservableObject
         ExtractCommand.NotifyCanExecuteChanged();
     }
 
+    private string EmbedFilePath => IsCd ? _state.CdEmbedFilePath : _state.DvdEmbedFilePath;
+
     private void BrowseEmbedFile()
     {
         string? picked = _shell.Dialogs?.PickOpen(L.T("选择要写入绘图区的文件"), L.T("所有文件|*.*"));
-        if (picked is not null)
+        if (picked is null)
+        {
+            return;
+        }
+
+        if (IsCd)
+        {
+            _state.CdEmbedFilePath = picked;
+        }
+        else
         {
             _state.DvdEmbedFilePath = picked;
+        }
+    }
+
+    private void ClearEmbedFile()
+    {
+        if (IsCd)
+        {
+            _state.CdEmbedFilePath = string.Empty;
+        }
+        else
+        {
+            _state.DvdEmbedFilePath = string.Empty;
         }
     }
 
@@ -186,7 +215,7 @@ public partial class ExportViewModel : ObservableObject
             string output = RequirePath(ExtractOutputPath, L.T("请选择取出文件的保存位置。"));
             await _shell.RunDiscJobAsync(
                 L.T("正在取出内嵌文件…"),
-                ["extract", "--iso", iso, "--output", output],
+                [IsCd ? "cd-extract" : "extract", "--iso", iso, "--output", output],
                 output);
         }
         catch (Exception exception)
@@ -195,15 +224,15 @@ public partial class ExportViewModel : ObservableObject
         }
     }
 
-    private string RequireEmbedFile()
+    private static string RequireEmbedFile(string raw)
     {
-        string path = _state.DvdEmbedFilePath.Trim();
+        string path = raw.Trim();
         return path.Length == 0 || !File.Exists(path)
             ? throw new ArgumentException(L.F($"内嵌文件不存在：{path}"))
             : path;
     }
 
-    /// <summary>The hybrid layout the drawing sits in, or null when no folder is stored.</summary>
+    /// <summary>The hybrid layout the DVD drawing sits in, or null when no folder is stored.</summary>
     internal DvdHybridStreamingPlan? PrepareDvdFilePlan(DvdStreamingOptions options)
     {
         string dataDirectory = _state.DvdDataDirectory.Trim();
@@ -216,15 +245,46 @@ public partial class ExportViewModel : ObservableObject
                 filesAtOuterRing: _state.DvdFilesAtOuterRing);
     }
 
+    /// <summary>A file in the drawing needs a CD data image, which exists only once a folder is chosen.</summary>
+    private void RequireCdDataDisc()
+    {
+        if (!_state.HasCdFiles)
+        {
+            throw new ArgumentException(L.T("内嵌文件需要 CD 数据盘：请先选择一个文件夹（空文件夹也可以）。"));
+        }
+    }
+
+    private CdDataLayoutPlan PrepareCdFilePlan(CdDiscParameters parameters)
+        => CdDataImageGenerator.PrepareLayout(
+            _state.CdDataDirectory.Trim(),
+            parameters,
+            string.IsNullOrWhiteSpace(_state.CdVolumeLabel) ? "CD_IMAGE" : _state.CdVolumeLabel.Trim(),
+            _state.CdFilesAtOuterRing);
+
     private async Task CheckEmbedCapacityAsync()
     {
         try
         {
-            string file = RequireEmbedFile();
-            DvdStreamingOptions options = _state.ReadDvdStreamingOptions();
-            string composite = await _design.EnsureExportCompositeAsync();
-            DvdHybridStreamingPlan? plan = PrepareDvdFilePlan(options);
-            DvdCarrierCapacity capacity = await MeasureEmbedCapacityAsync(composite, options, plan);
+            string file = RequireEmbedFile(EmbedFilePath);
+            CarrierCapacity capacity;
+            if (IsCd)
+            {
+                RequireCdDataDisc();
+                CdDiscParameters parameters = _state.ReadCdGeneratedParameters();
+                CdDataLayoutPlan plan = PrepareCdFilePlan(parameters);
+                string composite = await _design.EnsureExportCompositeAsync();
+                capacity = await MeasureEmbedCapacityAsync(report =>
+                    CdDataImageGenerator.MeasureCarrierCapacity(
+                        composite, parameters, plan, _state.Tone, value => report(value.Fraction)));
+            }
+            else
+            {
+                DvdStreamingOptions options = _state.ReadDvdStreamingOptions();
+                string composite = await _design.EnsureExportCompositeAsync();
+                DvdHybridStreamingPlan? plan = PrepareDvdFilePlan(options);
+                capacity = await MeasureDvdCapacityAsync(composite, options, plan);
+            }
+
             EmbedStatusText = DescribeEmbedCapacity(capacity, new FileInfo(file).Length);
         }
         catch (Exception exception)
@@ -235,12 +295,12 @@ public partial class ExportViewModel : ObservableObject
 
     /// <summary>Throws when the stored file does not fit; the streaming burn calls this before
     /// it asks for confirmation, because a truncated file cannot be repaired on a written disc.</summary>
-    internal async Task EnsureEmbedFitsAsync(
+    internal async Task EnsureDvdEmbedFitsAsync(
         string compositePath, DvdStreamingOptions options, DvdHybridStreamingPlan? plan)
     {
-        string file = RequireEmbedFile();
+        string file = RequireEmbedFile(_state.DvdEmbedFilePath);
         long size = new FileInfo(file).Length;
-        DvdCarrierCapacity capacity = await MeasureEmbedCapacityAsync(compositePath, options, plan);
+        CarrierCapacity capacity = await MeasureDvdCapacityAsync(compositePath, options, plan);
         EmbedStatusText = DescribeEmbedCapacity(capacity, size);
         if (!capacity.Fits(size))
         {
@@ -248,19 +308,46 @@ public partial class ExportViewModel : ObservableObject
         }
     }
 
-    private async Task<DvdCarrierCapacity> MeasureEmbedCapacityAsync(
+    /// <summary>The same guard for a CD data disc.</summary>
+    internal async Task EnsureCdEmbedFitsAsync(string compositePath, CdDiscParameters parameters)
+    {
+        string file = RequireEmbedFile(_state.CdEmbedFilePath);
+        RequireCdDataDisc();
+        long size = new FileInfo(file).Length;
+        CdDataLayoutPlan plan = PrepareCdFilePlan(parameters);
+        CarrierCapacity capacity = await MeasureEmbedCapacityAsync(report =>
+            CdDataImageGenerator.MeasureCarrierCapacity(
+                compositePath, parameters, plan, _state.Tone, value => report(value.Fraction)));
+        EmbedStatusText = DescribeEmbedCapacity(capacity, size);
+        if (!capacity.Fits(size))
+        {
+            throw new ArgumentException(EmbedStatusText);
+        }
+    }
+
+    private Task<CarrierCapacity> MeasureDvdCapacityAsync(
         string compositePath, DvdStreamingOptions options, DvdHybridStreamingPlan? plan)
+        => MeasureEmbedCapacityAsync(report =>
+        {
+            DvdCarrierCapacity measured = DvdStreamingGenerator.EstimateCarrierCapacity(
+                compositePath, options, plan, value => report(value.Fraction));
+            return new CarrierCapacity(measured.Blocks, measured.BlocksCarrying, measured.RawBits,
+                measured.DataBits, DvdImageSolver.Encoding.DvdEccBlockEncoder.PayloadBytesPerBlock);
+        });
+
+    /// <summary>Runs a capacity measurement with progress in the job dock. The measurement is
+    /// handed a callback that takes the completed fraction.</summary>
+    private async Task<CarrierCapacity> MeasureEmbedCapacityAsync(Func<Action<double>, CarrierCapacity> measure)
     {
         _shell.SetBusy(true);
         _shell.BeginDockJob(L.T("检查内嵌容量"), determinate: true);
-        Progress<DvdStreamingProgress> progress = new(value =>
-            _shell.ReportDockJob(L.F($"正在测量绘图区容量… {value.Fraction:P0}"), value.Fraction * 100));
+        Progress<double> progress = new(value =>
+            _shell.ReportDockJob(L.F($"正在测量绘图区容量… {value:P0}"), value * 100));
         try
         {
             // Image decoding goes through WIC, which wants the same STA thread as a job.
-            DvdCarrierCapacity capacity = await StaWorker.RunAsync(() =>
-                DvdStreamingGenerator.EstimateCarrierCapacity(
-                    compositePath, options, plan, ((IProgress<DvdStreamingProgress>)progress).Report));
+            CarrierCapacity capacity = await StaWorker.RunAsync(
+                () => measure(((IProgress<double>)progress).Report));
             _shell.CompleteDockJob(L.T("容量测量完成"));
             return capacity;
         }
@@ -275,7 +362,7 @@ public partial class ExportViewModel : ObservableObject
         }
     }
 
-    private static string DescribeEmbedCapacity(DvdCarrierCapacity capacity, long fileBytes)
+    private static string DescribeEmbedCapacity(CarrierCapacity capacity, long fileBytes)
     {
         double mebibyte = 1024.0 * 1024.0;
         double max = capacity.MaxFileBytes / mebibyte;
@@ -416,6 +503,12 @@ public partial class ExportViewModel : ObservableObject
             "--tone-brightness", tone.Brightness.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
             "--tone-gamma", tone.SrgbLinearization.ToString().ToLowerInvariant(),
         ]);
+        if (_state.HasCdEmbedFile)
+        {
+            RequireCdDataDisc();
+            arguments.AddRange(["--embed-file", RequireEmbedFile(_state.CdEmbedFilePath)]);
+        }
+
         if (_state.HasCdFiles)
         {
             arguments.AddRange(
@@ -484,7 +577,7 @@ public partial class ExportViewModel : ObservableObject
         if (_state.HasDvdEmbedFile)
         {
             arguments.Add("--embed-file");
-            arguments.Add(RequireEmbedFile());
+            arguments.Add(RequireEmbedFile(_state.DvdEmbedFilePath));
         }
 
         await _shell.RunDiscJobAsync(

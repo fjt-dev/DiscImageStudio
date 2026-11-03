@@ -78,6 +78,8 @@ public partial class DiscParametersState : ObservableObject
         nameof(CdOutputLabel), nameof(CdOutputHint))]
     private string _cdDataDirectory = string.Empty;
     [ObservableProperty] private bool _cdFilesAtOuterRing;
+    // A file stored inside the drawing itself; only a data disc (a folder is chosen) can carry one.
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(HasCdEmbedFile))] private string _cdEmbedFilePath = string.Empty;
     [ObservableProperty] private string _cdVolumeLabel = "CD_IMAGE";
 
     // Second parameter set of the live preview page's calibration mode: the disc the reader
@@ -231,6 +233,20 @@ public partial class DiscParametersState : ObservableObject
     public bool HasDvdFiles => !string.IsNullOrWhiteSpace(DvdDataDirectory);
 
     public bool HasDvdEmbedFile => !string.IsNullOrWhiteSpace(DvdEmbedFilePath);
+
+    public bool HasCdEmbedFile => !string.IsNullOrWhiteSpace(CdEmbedFilePath);
+
+    /// <summary>The CD geometry as the generators take it; shared by the burn page and the
+    /// capacity check.</summary>
+    internal CdDiscParameters ReadCdGeneratedParameters()
+    {
+        CdDiscParameters parameters = new(
+            ParameterParser.ParsePositiveDouble(CdInnerRadius, L.T("CD 内半径")),
+            ParameterParser.ParsePositiveDouble(CdOuterRadius, L.T("CD 外半径")),
+            ParameterParser.ParsePositiveLong(CdSectors, L.T("CD 扇区数")));
+        parameters.Validate();
+        return parameters;
+    }
 
     /// <summary>The DVD generation geometry and tone as the streaming engine takes them; the
     /// burn page, the capacity check and the export capacity guard all read it from here.</summary>

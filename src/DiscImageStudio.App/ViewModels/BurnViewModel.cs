@@ -536,7 +536,7 @@ public partial class BurnViewModel : ObservableObject
                     {
                         try
                         {
-                            await _shell.Export.EnsureEmbedFitsAsync(compositePath, options, hybridPlan);
+                            await _shell.Export.EnsureDvdEmbedFitsAsync(compositePath, options, hybridPlan);
                             embedBytes = new FileInfo(embedFile).Length;
                         }
                         catch (Exception exception)
@@ -604,6 +604,26 @@ public partial class BurnViewModel : ObservableObject
                 else
                 {
                     CdDiscParameters parameters = ReadCdGeneratedParameters();
+
+                    // Same guard as the DVD: a file stored inside the drawing must fit before
+                    // anything is written, and only a data disc (a folder is chosen) can hold one.
+                    string? cdEmbedFile = _state.HasCdEmbedFile ? _state.CdEmbedFilePath.Trim() : null;
+                    long cdEmbedBytes = 0;
+                    if (cdEmbedFile is not null)
+                    {
+                        try
+                        {
+                            await _shell.Export.EnsureCdEmbedFitsAsync(compositePath, parameters);
+                            cdEmbedBytes = new FileInfo(cdEmbedFile).Length;
+                        }
+                        catch (Exception exception)
+                        {
+                            BurnStatusText = L.T("内嵌文件放不下或无法检查，未开始刻录。");
+                            _shell.ShowValidationError(exception);
+                            return;
+                        }
+                    }
+
                     request = CreateCdBurnRequest(
                         compositePath,
                         parameters,
@@ -613,11 +633,17 @@ public partial class BurnViewModel : ObservableObject
                         _state.CdInterleave,
                         _state.Tone,
                         device.Id,
-                        selectedWriteSpeed.Speed);
+                        selectedWriteSpeed.Speed,
+                        cdEmbedFile,
+                        cdEmbedBytes);
                     contentDescription = request.MediaKind == OpticalBurnMediaKind.CdData
                         ? L.F($"CD 数据盘（DAO） · 文件位于{(_state.CdFilesAtOuterRing ? L.T("外圈") : L.T("内圈"))}")
                         : L.T("CD 音轨");
                     contentDescription += L.F($" · {parameters.Sectors} 扇区 · {request.ContentLength / (1024.0 * 1024.0):F1} MiB");
+                    if (cdEmbedFile is not null)
+                    {
+                        contentDescription += L.F($" · 内嵌文件 {Path.GetFileName(cdEmbedFile)} · {cdEmbedBytes / (1024.0 * 1024.0):F2} MiB");
+                    }
                 }
             }
 
@@ -722,7 +748,9 @@ public partial class BurnViewModel : ObservableObject
         bool interleave,
         ToneProfile tone,
         string deviceId,
-        OpticalWriteSpeed? writeSpeed)
+        OpticalWriteSpeed? writeSpeed,
+        string? embedFile = null,
+        long embedBytes = 0)
     {
         parameters.Validate();
         ToneProfile capturedTone = tone.Normalized();
@@ -737,8 +765,27 @@ public partial class BurnViewModel : ObservableObject
         CdDataLayoutPlan plan = CdDataImageGenerator.PrepareLayout(dataDirectory.Trim(), parameters,
             string.IsNullOrWhiteSpace(volumeLabel) ? "CD_IMAGE" : volumeLabel.Trim(), filesAtOuterRing);
         return new OpticalBurnRequest(deviceId, OpticalBurnMediaKind.CdData, checked(parameters.Sectors * 2048),
-            (output, token) => CdDataImageGenerator.GenerateToStream(imagePath, output, parameters, plan,
-                cancellationToken: token, tone: capturedTone), writeSpeed);
+            (output, token) =>
+            {
+                using CarrierPayload? payload = embedFile is null ? null : CarrierPayload.FromFile(embedFile);
+                CdBitCarrier? carrier = null;
+                if (payload is not null)
+                {
+                    if (payload.DataLength != embedBytes)
+                    {
+                        throw new InvalidOperationException(L.T("内嵌文件在容量检查之后发生了变化，已中止。"));
+                    }
+
+                    carrier = new CdBitCarrier(payload);
+                }
+
+                CdDataImageGenerator.GenerateToStream(imagePath, output, parameters, plan,
+                    cancellationToken: token, tone: capturedTone, carrier: carrier);
+                if (carrier is { Stats.Complete: false })
+                {
+                    throw new InvalidOperationException(L.T("内嵌文件没有完整写入绘图区。"));
+                }
+            }, writeSpeed);
     }
 
     // Request construction is separate from physical writing so the captured
@@ -787,15 +834,7 @@ public partial class BurnViewModel : ObservableObject
         _burnCancellation?.Cancel();
     }
 
-    private CdDiscParameters ReadCdGeneratedParameters()
-    {
-        CdDiscParameters parameters = new(
-            ParameterParser.ParsePositiveDouble(_state.CdInnerRadius, L.T("CD 内半径")),
-            ParameterParser.ParsePositiveDouble(_state.CdOuterRadius, L.T("CD 外半径")),
-            ParameterParser.ParsePositiveLong(_state.CdSectors, L.T("CD 扇区数")));
-        parameters.Validate();
-        return parameters;
-    }
+    private CdDiscParameters ReadCdGeneratedParameters() => _state.ReadCdGeneratedParameters();
 
     private BluRayDiscParameters ReadBluRayParameters()
     {
