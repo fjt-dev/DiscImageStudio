@@ -1,5 +1,6 @@
 using System.Text.Json;
 using DiscImageStudio.Core;
+using DiscImageStudio.Core.Carrier;
 using DvdImageSolver.Encoding;
 using DvdImageSolver.Solver;
 
@@ -25,6 +26,7 @@ internal static class Program
                 "encode" => Encode(CliArguments.Parse(args.AsSpan(1))),
                 "calibrate" => Calibrate(CliArguments.Parse(args.AsSpan(1))),
                 "simulate" => Simulate(CliArguments.Parse(args.AsSpan(1))),
+                "extract" => Extract(CliArguments.Parse(args.AsSpan(1))),
                 "selftest" => RunSelfTests(),
                 _ => throw new ArgumentException($"Unknown command '{args[0]}'."),
             };
@@ -41,6 +43,7 @@ internal static class Program
         _ = ReadFilesAtOuterRing(arguments);
         uint fillSectors = arguments.GetUInt("fill-sectors", DvdEccBlockEncoder.SectorCount);
         if (arguments.Has("data-dir")
+            || arguments.Has("embed-file")
             || fillSectors != DvdEccBlockEncoder.SectorCount
             || ReadBoolean(arguments, "fast-output", fallback: false))
         {
@@ -465,6 +468,16 @@ internal static class Program
             throw new ArgumentException("--fast-output true requires --algorithm dispersion.");
         }
 
+        string? embedFile = arguments.Has("embed-file") ? arguments.Require("embed-file") : null;
+        if (embedFile is not null && (!fastOutput || algorithm != SolverAlgorithm.Dispersion))
+        {
+            throw new ArgumentException(
+                "--embed-file needs the fast dispersion writer: add --fast-output true --algorithm dispersion "
+                + "(hybrid --data-dir mode already uses it).");
+        }
+
+        using CarrierPayload? carrierPayload = embedFile is null ? null : CarrierPayload.FromFile(embedFile);
+        DvdBitCarrierEmbedder? carrier = carrierPayload is null ? null : new DvdBitCarrierEmbedder(carrierPayload);
         int iterationsPerBlock = arguments.Has("iterations-per-block")
             ? arguments.GetInt("iterations-per-block", 0)
             : arguments.GetInt(
@@ -577,7 +590,10 @@ internal static class Program
             arguments.GetInt("batch-candidates", 4),
             arguments.GetInt("search-lanes", 1),
             arguments.GetInt("fast-parallelism", 0),
-            PreserveExistingIso: hybridMode);
+            PreserveExistingIso: hybridMode)
+        {
+            PayloadProcessor = carrier,
+        };
         int totalBlocks = checked((int)(fillSectors / DvdEccBlockEncoder.SectorCount));
         int progressEvery = Math.Max(1, totalBlocks / 100);
         if (fastOutput)
@@ -587,7 +603,9 @@ internal static class Program
                 isoOutputPath,
                 options,
                 progressEvery,
-                hybridIso);
+                hybridIso,
+                carrier,
+                embedFile);
         }
 
         Console.WriteLine(
@@ -753,6 +771,65 @@ internal static class Program
         return 0;
     }
 
+    private static object DescribeBitCarrier(DvdBitCarrierStats stats, string embeddedFile) => new
+    {
+        format = "dvd-bit-per-byte-v1",
+        groupBytes = CombinadicGroup.Size,
+        embeddedFile = Path.GetFileName(embeddedFile),
+        embeddedBytes = stats.StreamBitsTotal / 8,
+        storedBytes = stats.StreamBitsCarried / 8,
+        complete = stats.Complete,
+        blocksCarrying = stats.BlocksCarrying,
+        drawingCapacityBytes = stats.CapacityBytes,
+    };
+
+    private static int Extract(CliArguments arguments)
+    {
+        string isoPath = arguments.Require("iso");
+        string outputPath = arguments.Require("output");
+        uint psnOffset = arguments.GetUInt("psn-offset", 0x30000);
+        EnsureParentDirectory(outputPath);
+        if (string.Equals(Path.GetFullPath(isoPath), Path.GetFullPath(outputPath), StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("--output must differ from --iso.");
+        using FileStream iso = new(isoPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 20,
+            FileOptions.SequentialScan);
+        using FileStream output = new(outputPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+        int lastPercent = -1;
+        CarrierExtractResult result = DvdBitCarrierExtractor.Extract(iso, output, psnOffset, progress =>
+        {
+            int percent = progress.TotalBlocks == 0 ? 100 : (int)(progress.BlocksScanned * 100 / progress.TotalBlocks);
+            if (percent != lastPercent && percent % 5 == 0)
+            {
+                lastPercent = percent;
+                Console.WriteLine(
+                    $"scanned {progress.BlocksScanned}/{progress.TotalBlocks} ECC blocks, "
+                    + $"frames={progress.BlocksAccepted}");
+            }
+        });
+        if (!result.HeaderFound)
+        {
+            output.Dispose();
+            File.Delete(outputPath);
+            Console.Error.WriteLine(
+                $"error: no carrier stream found ({result.BlocksAccepted} frames). Check --psn-offset and "
+                + "that the image holds the disc from LBA 0.");
+            return 1;
+        }
+
+        if (!result.Complete)
+        {
+            Console.Error.WriteLine(
+                $"error: stream is incomplete: {result.MissingBits / 8} bytes missing of {result.DataLength}; "
+                + (result.MissingBits == 0 ? "CRC-32 mismatch. " : string.Empty)
+                + $"partial data written to {outputPath}");
+            return 1;
+        }
+
+        Console.WriteLine(
+            $"extracted {result.DataLength} bytes from {result.BlocksAccepted} frames, CRC-32 verified: {outputPath}");
+        return 0;
+    }
+
     private static bool ReadFilesAtOuterRing(CliArguments arguments)
     {
         bool outer = arguments.Get("file-position", "inner") switch
@@ -771,7 +848,9 @@ internal static class Program
         string isoOutputPath,
         MultiBlockSolveOptions options,
         int progressEvery,
-        HybridIsoWriteSummary? hybridIso)
+        HybridIsoWriteSummary? hybridIso,
+        DvdBitCarrierEmbedder? carrier = null,
+        string? embedFile = null)
     {
         Console.WriteLine(
             $"fast raw ISO fill: LBA {options.StartLba}.."
@@ -844,8 +923,25 @@ internal static class Program
                 mountableFilesystem = hybridIso is not null,
                 hybrid = hybridIso,
             },
+            bitCarrier = carrier is null ? null : DescribeBitCarrier(carrier.Stats, embedFile!),
         };
         WriteJson(isoOutputPath + ".json", metadata);
+        if (carrier is not null)
+        {
+            DvdBitCarrierStats carried = carrier.Stats;
+            Console.WriteLine(
+                $"bit carrier: {carried.StreamBitsCarried / 8} of {carried.StreamBitsTotal / 8} bytes stored in "
+                + $"{carried.BlocksCarrying} ECC blocks (drawing capacity about {carried.CapacityBytes} bytes)");
+            if (!carried.Complete)
+            {
+                Console.Error.WriteLine(
+                    $"error: the drawing holds only about {carried.CapacityBytes} bytes but "
+                    + $"{embedFile} needs {carried.StreamBitsTotal / 8}. The ISO was written without the "
+                    + "complete file; use a smaller file, a lighter-toned image or a larger drawing area.");
+                return 1;
+            }
+        }
+
         double totalMebibytes = result.FilledSectors
             * (double)IsoImageWriter.LogicalSectorBytes
             / (1024 * 1024);
@@ -1427,6 +1523,9 @@ internal static class Program
             Simulate the read-back of a generated ISO:
               DvdImageSolver simulate --iso IMAGE.iso --output PREVIEW.png [options]
 
+            Recover a file stored with --embed-file from an ISO or a raw drive image:
+              DvdImageSolver extract --iso IMAGE.iso --output FILE [--psn-offset N]
+
             Common options:
               --lba N                   Initial LBA only; following 15 sectors are consecutive (default 0)
               --psn-offset N            Decimal or 0x-prefixed PSN offset (default 0x30000)
@@ -1460,6 +1559,9 @@ internal static class Program
               --data-dir DIR            Hybrid disc: store this directory together with the drawing
               --file-position MODE      inner (default) or outer; outer requires --data-dir
               --drawing-start-lba N     Hybrid override; must follow all files and align to an ECC Block
+              --embed-file FILE         Store FILE inside the drawing itself (one bit per byte channel).
+                                        The picture keeps its tones; only the order of light and dark
+                                        bytes inside each 16-byte group carries data. Needs fast output.
               --fast-output true|false Direct dispersion ISO output without ECC/EFM replay
                                         (default false; true in hybrid mode)
               --fast-parallelism 0..64 Fast-output workers; 0 selects processor count (default 0)

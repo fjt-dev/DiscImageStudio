@@ -27,6 +27,12 @@ public sealed record MultiBlockSolveOptions(
 {
     /// <summary>Use four-double raster sampling in fast output when supported; false retains the scalar reference path.</summary>
     public bool UseSimdSampling { get; init; } = true;
+
+    /// <summary>
+    /// Optional hook for fast dispersion output. It receives each finished payload block,
+    /// serially and in ascending LBA order, before the block is written.
+    /// </summary>
+    public IDvdBlockPayloadProcessor? PayloadProcessor { get; init; }
 }
 
 public sealed record MultiBlockProgress(

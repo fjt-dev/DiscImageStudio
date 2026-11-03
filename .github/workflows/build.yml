@@ -58,6 +58,9 @@ jobs:
             -C "$GITHUB_WORKSPACE" LICENSE THIRD-PARTY-NOTICES.txt
           (cd artifacts/cli && shasum -a 256 "$archive" > "$archive.sha256")
 
+      - name: Test the bit-per-byte carrier
+        run: dotnet run --project tests/DiscImageStudio.CarrierTests -c Release
+
       - name: Test the extracted CLI on the target platform
         shell: bash
         run: |
@@ -102,6 +105,9 @@ jobs:
 
       - name: Test module architecture
         run: dotnet run --project tests/DiscImageStudio.ArchitectureTests --configuration Release --no-build
+
+      - name: Test the bit-per-byte carrier
+        run: dotnet run --project tests/DiscImageStudio.CarrierTests --configuration Release --no-build
 
       - name: Test original DVD engine
         run: dotnet run --project src/DvdImageSolver --configuration Release --no-build -- selftest

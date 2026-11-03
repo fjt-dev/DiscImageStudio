@@ -27,6 +27,7 @@ public sealed class DvdDiscModule : IOpticalDiscModule
                     new("iso-output", "Output ISO", DiscOptionValueType.OutputFile),
                     new("data-dir", "Hybrid data folder", DiscOptionValueType.InputFolder),
                     new("file-position", "File placement", DiscOptionValueType.Choice, DefaultValue: "inner", Choices: ["inner", "outer"]),
+                    new("embed-file", "File stored inside the drawing", DiscOptionValueType.InputFile),
                 ]),
             new DiscCommandDescriptor(
                 "encode",
@@ -54,6 +55,15 @@ public sealed class DvdDiscModule : IOpticalDiscModule
                 [
                     new("iso", "Generated ISO image", DiscOptionValueType.InputFile, Required: true),
                     new("output", "Preview PNG", DiscOptionValueType.OutputFile, Required: true),
+                ]),
+            new DiscCommandDescriptor(
+                "extract",
+                "Extract file hidden in the drawing",
+                "Recovers a file stored with --embed-file from a generated ISO or a raw 2048-byte-sector drive image.",
+                DiscModuleCapabilities.None,
+                [
+                    new("iso", "ISO or drive image", DiscOptionValueType.InputFile, Required: true),
+                    new("output", "Recovered file", DiscOptionValueType.OutputFile, Required: true),
                 ]),
             new DiscCommandDescriptor(
                 "selftest",

@@ -90,6 +90,7 @@ public static class FastDispersionImageWriter
             for (int batchOffset = 0; batchOffset < batchCount; batchOffset++)
             {
                 GeneratedBlock block = generated[batchOffset];
+                options.PayloadProcessor?.Process(block.Lba, options.PsnOffset, block.Payloads);
                 iso.WriteBlock(block.Lba, block.Payloads);
                 controlledWords += block.ControlledWords;
                 int completedBlocks = batchStart + batchOffset + 1;
@@ -237,6 +238,7 @@ public static class FastDispersionImageWriter
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 GeneratedBlock block = generated[batchOffset];
+                options.PayloadProcessor?.Process(block.Lba, options.PsnOffset, block.Payloads);
                 output.Write(block.Payloads);
                 bytesWritten = checked(bytesWritten + block.Payloads.Length);
                 controlledWords += block.ControlledWords;
